@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs for the same ref so stacked pushes don't queue redundant work.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-format:
+    name: build / test / format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET (SDK pinned via global.json)
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      # setup-dotnet's built-in NuGet cache requires packages.lock.json files, which this
+      # repo does not use. Cache the global packages folder keyed on project/props files.
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Build.props', '**/Directory.Packages.props') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Build
+        run: dotnet build --configuration Release -warnaserror
+
+      - name: Test
+        run: dotnet test --configuration Release --no-build
+
+      - name: Format check
+        run: dotnet format --verify-no-changes
