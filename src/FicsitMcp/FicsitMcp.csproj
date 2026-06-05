@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    MCP server console host. Program.cs does only host/transport wiring; tool and
+    service logic lives in this project's Tools folder and in FicsitMcp.Domain.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FicsitMcp.Domain\FicsitMcp.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

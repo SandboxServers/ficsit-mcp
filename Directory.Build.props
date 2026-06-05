@@ -1,0 +1,27 @@
+<Project>
+
+  <!--
+    Shared build settings for every project in the solution. Set once here so the
+    rigor cannot drift between projects (the .NET equivalent of a Cargo workspace
+    centralizing lint/build flags at the root).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+
+    <!-- A warning is a bug we haven't filed yet: fail the build on any of them. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- Run the analyzers/style rules during `dotnet build` so build, IDE, and
+         `dotnet format` agree on what "clean" means. Without this, formatting
+         issues only surface in `dotnet format` and silently pass CI builds. -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+
+    <!-- Central package management: versions live in Directory.Packages.props,
+         so no project can pin a different version of a shared dependency. -->
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+</Project>

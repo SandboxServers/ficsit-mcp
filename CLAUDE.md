@@ -2,41 +2,70 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project status: greenfield
+## Solution layout
 
-As of this writing the repository contains only `README.md`. There is no source code,
-project file, or build tooling yet. **When you scaffold the project, update this file** with
-the real solution layout, commands, and architecture — the sections below describe the
-*intended* design and the conventional .NET commands that will apply once a project exists.
+```
+FicsitMcp.sln
+global.json                  # pins the .NET SDK (major 10, rollForward latestMinor)
+Directory.Build.props        # shared build settings for every project (see below)
+Directory.Packages.props     # central package management — all versions live here
+.editorconfig                # style/analyzer rules; every severity override has a why-comment
+src/
+  FicsitMcp/                 # console host (Exe). Program.cs = host/transport wiring only
+    Program.cs               #   stderr logging + AddMcpServer().WithStdioServerTransport()
+    Tools/                   #   thin [McpServerToolType] tools that delegate to Domain
+      ServerInfoTool.cs      #   placeholder `server_info` tool
+  FicsitMcp.Domain/          # Satisfactory domain + surface clients; NO MCP references
+    ServerInfo.cs            #   record returned by server_info
+    IServerInfoProvider.cs   #   service contract (tools depend on this, not reflection)
+    ServerInfoProvider.cs    #   default impl, registered in DI
+tests/
+  FicsitMcp.Tests/           # xUnit; references both projects
+```
+
+Target framework is **`net9.0`**. Shared settings in `Directory.Build.props`:
+`Nullable=enable`, `ImplicitUsings=enable`, `LangVersion=latest`,
+`TreatWarningsAsErrors=true`, `EnforceCodeStyleInBuild=true` (so build, IDE, and
+`dotnet format` agree), and `ManagePackageVersionsCentrally=true`. Package versions
+are **only** in `Directory.Packages.props`; per-project `<PackageReference>` entries
+carry no `Version`.
+
+Conventions to keep: file-scoped namespaces (enforced as a warning, i.e. an error
+here), one public type per file, and — in every config file — a one-line comment on
+each rule-severity override explaining *why* it deviates from the default.
+
+### Critical: stdout belongs to JSON-RPC
+
+The server speaks MCP over **stdio**, so `stdout` is the JSON-RPC transport. A single
+`Console.WriteLine` (or any log written to stdout) corrupts the stream and shows up to
+clients as a baffling "client disconnected". All logging is routed to **stderr** in
+`Program.cs` via `LogToStandardErrorThreshold = LogLevel.Trace`. Never write to stdout.
 
 ## What this is
 
-`ficsit-mcp` is intended to be an **MCP (Model Context Protocol) server written in C# / .NET**.
+`ficsit-mcp` is an **MCP (Model Context Protocol) server written in C# / .NET**.
 The name and README slogan ("Ficsit does not waste") theme it around FICSIT Inc. from the game
 *Satisfactory*, so the server's tools/resources are expected to expose Satisfactory-related
 data or actions to MCP clients.
 
-The standard C# implementation uses the official **`ModelContextProtocol`** NuGet package
-(the .NET MCP SDK). A typical host is a console app using `Microsoft.Extensions.Hosting`,
-registering MCP tools via `.AddMcpServer()` and transports such as stdio
-(`.WithStdioServerTransport()`) for local clients.
+It is built on the official **`ModelContextProtocol`** NuGet package (the .NET MCP SDK)
+and `Microsoft.Extensions.Hosting`. The host (`src/FicsitMcp`) is a console app that
+registers tools via `.AddMcpServer().WithStdioServerTransport().WithToolsFromAssembly()`
+over the stdio transport for local clients.
 
-## Commands (once a project is scaffolded)
-
-```sh
-dotnet build                              # build the solution
-dotnet run --project <ServerProject>      # run the MCP server
-dotnet test                               # run all tests
-dotnet test --filter "FullyQualifiedName~<TestName>"   # run a single test / class
-dotnet format                             # apply formatting / lint fixes
-```
-
-Suggested scaffolding if starting from scratch:
+## Commands
 
 ```sh
-dotnet new console -n FicsitMcp          # or `dotnet new sln` + a class library
-dotnet add package ModelContextProtocol
+dotnet build                                           # build the solution (warnings = errors)
+dotnet run --project src/FicsitMcp                     # run the MCP server (stdio)
+dotnet test                                            # run all tests
+dotnet test --filter "FullyQualifiedName~ServerInfoProviderTests"   # run a single test class
+dotnet format                                          # apply formatting / style fixes
+dotnet format --verify-no-changes                      # CI check: fail if formatting is off
 ```
+
+The quality gate (run locally before pushing; CI runs the same): `dotnet build`,
+`dotnet test`, and `dotnet format --verify-no-changes` must all pass cleanly.
 
 ## Architecture notes for MCP servers
 
@@ -54,9 +83,33 @@ isolation from the MCP plumbing.
 
 ## Local client configuration
 
-MCP clients (e.g. Claude Desktop) launch the server as a subprocess over stdio. Once built,
-the server is registered in the client's MCP config by pointing at `dotnet run --project ...`
-or the published executable. Document the exact config block here once the entry point exists.
+MCP clients launch the server as a subprocess over stdio. Point the client at
+`dotnet run --project src/FicsitMcp` (uses the absolute path to this repo).
+
+Claude Desktop (`claude_desktop_config.json`) / Claude Code (`.mcp.json`) block:
+
+```json
+{
+  "mcpServers": {
+    "ficsit-mcp": {
+      "command": "dotnet",
+      "args": ["run", "--project", "/absolute/path/to/ficsit-mcp/src/FicsitMcp"]
+    }
+  }
+}
+```
+
+For a faster launch, publish the host (`dotnet publish src/FicsitMcp -c Release`) and
+point `command` at the produced executable instead of `dotnet run`.
+
+Smoke-test without a client by piping JSON-RPC into the server; the placeholder tool
+proves the pipeline:
+
+```sh
+dotnet run --project src/FicsitMcp
+# then send: initialize -> notifications/initialized -> tools/list
+# tools/list returns the `server_info` tool. All logs go to stderr; stdout is JSON-RPC only.
+```
 
 ## Agent team
 
