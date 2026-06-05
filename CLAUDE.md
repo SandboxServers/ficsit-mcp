@@ -61,17 +61,17 @@ or the published executable. Document the exact config block here once the entry
 ## Agent team
 
 Specialized agents live in `.claude/agents/`, mapped to the filed issues. Route work to the
-narrowest matching agent; `ficsit-mcp-engineer` is the generalist owner for anything that
-spans surfaces or doesn't fit below.
+narrowest matching agent; anything that spans surfaces or doesn't fit below is handled
+directly (no generalist agent).
 
 | Agent | Owns | Issues |
 |---|---|---|
-| `dotnet-infra-engineer` | Solution skeleton, host/DI/config, HTTP plumbing, CI gate, UDP query, logging conventions | #1–#4, #10, #26 |
-| `dedicated-server-api-engineer` | Official HTTPS API client + its tools (state, saves, settings, console) | #5–#9 |
-| `frm-engineer` | Ficsit Remote Monitoring client + observe/power/logistics tools | #11–#14 |
-| `factory-domain-analyst` | Static game data (`Docs.json`), production-graph analysis tools | #15, #16 |
-| `fin-bridge-engineer` | FIN bridge protocol, host, machine-control tools, event notifications | #17, #18, #20, #21 |
-| `fin-lua-author` | The in-world FIN Lua agent script (`agent/`) | #19 |
-| `test-harness-engineer` | Fixtures, fakes, end-to-end MCP tests, schema snapshots | #22 |
-| `safety-auditor` | Behavioral-hint policy, destructive-tool review, ReadOnlyMode (review-only) | #24 |
-| `release-engineer` | Publish profiles, release workflow, client quickstarts, container | #23 |
+| `dotnet-mcp-infrastructure` | Solution skeleton, host/DI/config, HTTP plumbing, CI gate, UDP query, logging conventions | #1–#4, #10, #26 |
+| `ficsit-server-api-client` | Official HTTPS API client + its tools (state, saves, settings, console) | #5–#9 |
+| `frm-observe-surface` | Ficsit Remote Monitoring client + observe/power/logistics tools | #11–#14 |
+| `ficsit-domain-engineer` | Static game data (`Docs.json`), production-graph analysis tools | #15, #16 |
+| `fin-bridge-architect` | FIN bridge protocol, host, machine-control tools, event notifications | #17, #18, #20, #21 |
+| `fin-agent-lua-author` | The in-world FIN Lua agent script (`agent/`) | #19 |
+| `mcp-test-harness-engineer` | Fixtures, fakes, end-to-end MCP tests, schema snapshots | #22 |
+| `mcp-tool-safety-auditor` | Behavioral-hint policy, destructive-tool review, ReadOnlyMode (review-only) | #24 |
+| `release-packaging-engineer` | Publish profiles, release workflow, client quickstarts, container | #23 |
