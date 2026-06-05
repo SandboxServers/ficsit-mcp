@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Satisfactory domain model + surface clients. Deliberately has NO reference to
+    ModelContextProtocol: domain/service logic stays testable in isolation from
+    the MCP host and transport.
+  -->
+
+</Project>
