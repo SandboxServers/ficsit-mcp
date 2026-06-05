@@ -23,7 +23,7 @@ tests/
   FicsitMcp.Tests/           # xUnit; references both projects
 ```
 
-Target framework is **`net9.0`**. Shared settings in `Directory.Build.props`:
+Target framework is **`net10.0`** (current LTS). Shared settings in `Directory.Build.props`:
 `Nullable=enable`, `ImplicitUsings=enable`, `LangVersion=latest`,
 `TreatWarningsAsErrors=true`, `EnforceCodeStyleInBuild=true` (so build, IDE, and
 `dotnet format` agree), and `ManagePackageVersionsCentrally=true`. Package versions

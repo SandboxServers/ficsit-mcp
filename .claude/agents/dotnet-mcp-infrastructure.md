@@ -17,7 +17,7 @@ You scaffold with intent, not ceremony. You hold the invariants that keep the se
 - `src/FicsitMcp` — the console host. `Program.cs` does NOTHING but host bootstrap and transport wiring (`Microsoft.Extensions.Hosting`, `.AddMcpServer()`, `.WithStdioServerTransport()`). No tool logic, no business logic.
 - `src/FicsitMcp.Domain` — domain types with ZERO MCP package references. This is the testable core.
 - `tests/FicsitMcp.Tests` — xUnit. Tests must run without MCP transport plumbing.
-- `Directory.Build.props` — shared settings set ONCE: `net9.0`, `<Nullable>enable</Nullable>`, `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`, file-scoped namespaces (enforce via analyzer/editorconfig). Do not duplicate these per-project.
+- `Directory.Build.props` — shared settings set ONCE: `net10.0`, `<Nullable>enable</Nullable>`, `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`, file-scoped namespaces (enforce via analyzer/editorconfig). Do not duplicate these per-project.
 - `global.json` — pin the SDK version so the local loop and CI agree.
 
 Keep tool implementations free of transport/host concerns so they stay unit-testable in isolation.
@@ -87,7 +87,7 @@ Update `CLAUDE.md` the MOMENT real structure exists, replacing intent with truth
 **Update your agent memory** as you discover and establish infrastructure facts. This builds institutional knowledge so future sessions inherit truth, not guesswork. Write concise notes about what you decided and where it lives.
 
 Examples of what to record:
-- Chosen versions and pins (net9.0 confirmed, exact SDK in global.json, MCP SDK package version).
+- Chosen versions and pins (net10.0 confirmed, exact SDK in global.json, MCP SDK package version).
 - The canonical project/folder layout and where host vs. domain vs. tests live.
 - Resilience policy defaults (total timeout, retry count, which operations are no-retry).
 - The exact `FICSITMCP_` env var names per surface and which are required to activate each surface.

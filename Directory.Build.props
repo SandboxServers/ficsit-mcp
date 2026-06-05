@@ -6,7 +6,10 @@
     centralizing lint/build flags at the root).
   -->
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <!-- net10.0 is the current LTS (supported to Nov 2028). net9.0 is STS and
+         leaves support Nov 2026, so a greenfield project has no reason to start
+         there. The pinned SDK (global.json) and Hosting packages are already 10.x. -->
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>

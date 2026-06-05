@@ -21,7 +21,6 @@ public sealed class ServerInfoTool
     /// </summary>
     [McpServerTool(Name = "server_info", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("Returns identifying information about this MCP server: its name, build version, and the .NET runtime it is running on.")]
-    public static ServerInfo ServerInfo(
-        [Description("Provides the server's name, version, and runtime.")] IServerInfoProvider provider)
+    public static ServerInfo ServerInfo(IServerInfoProvider provider)
         => provider.GetServerInfo();
 }
