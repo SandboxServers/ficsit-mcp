@@ -13,8 +13,34 @@ password login is skipped when present. With no config token, authenticated call
 `DedicatedServerAuthException("no_credentials")` until a caller establishes a token via
 `PasswordLoginAsync`/`ClaimServerAsync` (those adopt the returned token into the cache).
 
-**Attach:** `Authorization: Bearer <token>` on authenticated functions only. HealthCheck /
-PasswordLogin / PasswordlessLogin / ClaimServer send NO bearer (authenticated:false).
+**Per-function auth — `AuthMode` enum (`AuthMode.cs`), PR #34 adversarial FIX 5.** Replaced the old
+`authenticated:bool` (attach+require | neither) with three modes, because the API authorizes by
+privilege PER FUNCTION (verified against the wiki privilege table 2026-06-06):
+- `AuthMode.None` — never attach, never require. The login functions: `PasswordLogin`,
+  `PasswordlessLogin` (they MINT the token; sending one is meaningless). A None call never attaches a
+  bearer even when one is cached.
+- `AuthMode.AttachIfAvailable` — attach the cached token when held, but DO NOT require it. The
+  spec-marked **no-privilege reads**: `HealthCheck`, `QueryServerState`, `GetServerOptions`,
+  `GetAdvancedGameSettings`. This is what lets a TOKENLESS bootstrap host run the pre-claim "is this
+  server unclaimed / what state?" probe (the C6 bootstrap mode). Wiki says these require no privilege.
+- `AuthMode.Required` — attach + fail fast (`no_credentials`) if none held. Everything else:
+  `EnumerateSessions` (**wiki: requires Admin** — the ONE read that is NOT no-privilege),
+  `VerifyAuthenticationToken` (validates the held token), `ClaimServer`, all management/console/save
+  writes, and `DownloadSaveGame`.
+- Re-auth/replay on 401 only fires when a token was actually attached (`attachedToken is not null`) —
+  None and AttachIfAvailable-without-token surface the response instead.
+
+**ClaimServer (PR #34 adversarial FIX 1 — CRITICAL CORRECTION).** Earlier code sent ClaimServer with
+`authenticated:false` and a WRONG comment ("Claim grants InitialAdmin implicitly"). The real spec:
+ClaimServer **requires the InitialAdmin privilege**, obtained ONLY via a prior
+`PasswordlessLogin(MinimumPrivilegeLevel=InitialAdmin)` on a never-claimed server. The two-step flow:
+(1) `PasswordlessLogin(InitialAdmin)` → InitialAdmin token (client caches it, attaches NO bearer);
+(2) `ClaimServer` is sent **WITH the InitialAdmin bearer** (`AuthMode.Required`) → returns the real
+admin token; (3) client adopts the admin token (replaces InitialAdmin). ClaimServer uses
+`allowReauth:false` (a 401 is a clean InitialAdmin-token-rejected auth failure, NOT an ambiguous side
+effect — surfaces `DedicatedServerAuthException`, not `DedicatedServerAmbiguousResultException`). Tests:
+`ClaimServer_AttachesCachedBearer` + `TwoStepClaim_..._SendsInitialAdminTokenAndAdoptsAdminToken`.
+`InvokeAsync` gained an `allowReauth` overload to support this (mirrors `InvokeNoContentAsync`).
 
 **401 re-auth/replay (`SendWithReauthAsync`):** takes a request *factory* (a sent HttpRequestMessage
 can't be reused). Also takes an optional `HttpCompletionOption` (default `ResponseContentRead`) so the

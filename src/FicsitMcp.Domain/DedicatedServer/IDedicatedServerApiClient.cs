@@ -67,7 +67,9 @@ public interface IDedicatedServerApiClient
 
     /// <summary>
     /// <c>PasswordlessLogin</c> — obtains a bearer token at the requested privilege without a
-    /// password (only possible when the server permits it). Idempotent.
+    /// password (only possible when the server permits it). Sends no bearer itself. Idempotent.
+    /// Requesting <see cref="ApiPrivilegeLevel.InitialAdmin"/> on a never-claimed server is the
+    /// REQUIRED first step of the two-step claim flow (see <see cref="ClaimServerAsync"/>).
     /// </summary>
     Task<AuthenticationTokenResponse> PasswordlessLoginAsync(
         PasswordlessLoginRequest request,
@@ -90,7 +92,9 @@ public interface IDedicatedServerApiClient
     // --- Server state (read) ------------------------------------------------------------------
 
     /// <summary>
-    /// <c>HealthCheck</c> — lightweight liveness/responsiveness probe. Idempotent; no auth required.
+    /// <c>HealthCheck</c> — lightweight liveness/responsiveness probe. Idempotent. The spec requires
+    /// NO privilege: a cached token is attached when held but is not required, so this works on a
+    /// tokenless bootstrap host.
     /// </summary>
     Task<HealthCheckResponse> HealthCheckAsync(
         HealthCheckRequest? request = null,
@@ -98,26 +102,61 @@ public interface IDedicatedServerApiClient
 
     /// <summary>
     /// <c>QueryServerState</c> — current game state (players, tier, phase, tick rate, etc.).
-    /// Idempotent. Returns the nested <c>serverGameState</c> shape.
+    /// Idempotent. Returns the nested <c>serverGameState</c> shape. The spec requires NO privilege: a
+    /// cached token is attached when held but not required, so this answers the pre-claim "is this
+    /// server unclaimed / what state is it in?" probe on a tokenless bootstrap host.
     /// </summary>
     Task<QueryServerStateResponse> QueryServerStateAsync(CancellationToken cancellationToken = default);
 
-    /// <summary><c>GetServerOptions</c> — active and pending server options. Read-only.</summary>
+    /// <summary>
+    /// <c>GetServerOptions</c> — active and pending server options. Read-only. Spec requires NO
+    /// privilege: token attached if held, not required.
+    /// </summary>
     Task<GetServerOptionsResponse> GetServerOptionsAsync(CancellationToken cancellationToken = default);
 
-    /// <summary><c>GetAdvancedGameSettings</c> — creative-mode flag and advanced settings. Read-only.</summary>
+    /// <summary>
+    /// <c>GetAdvancedGameSettings</c> — creative-mode flag and advanced settings. Read-only. Spec
+    /// requires NO privilege: token attached if held, not required.
+    /// </summary>
     Task<GetAdvancedGameSettingsResponse> GetAdvancedGameSettingsAsync(CancellationToken cancellationToken = default);
 
-    /// <summary><c>EnumerateSessions</c> — all sessions and their save headers. Read-only.</summary>
+    /// <summary>
+    /// <c>EnumerateSessions</c> — all sessions and their save headers. Read-only, but unlike the other
+    /// reads the spec REQUIRES Admin privilege: a token is mandatory, and a tokenless call fails fast
+    /// with a <see cref="DedicatedServerAuthException"/>.
+    /// </summary>
     Task<EnumerateSessionsResponse> EnumerateSessionsAsync(CancellationToken cancellationToken = default);
 
     // --- Server management (state-changing) ---------------------------------------------------
 
     /// <summary>
     /// <c>ClaimServer</c> — sets the first admin password on a NEVER-CLAIMED server and returns the
-    /// admin token. One-shot: a claimed server rejects this with <c>server_claimed</c>; the only way
-    /// to re-run is a full server wipe. The admin password is never logged or echoed.
+    /// real admin token. One-shot: a claimed server rejects this with <c>server_claimed</c>; the only
+    /// way to re-run is a full server wipe. The admin password is never logged or echoed.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Two-step claim flow (callers MUST do step 1 first).</b> ClaimServer requires the
+    /// <see cref="ApiPrivilegeLevel.InitialAdmin"/> privilege, which is obtained ONLY by a prior
+    /// <see cref="PasswordlessLoginAsync"/> with
+    /// <see cref="PasswordlessLoginRequest.MinimumPrivilegeLevel"/> =
+    /// <see cref="ApiPrivilegeLevel.InitialAdmin"/> against an unclaimed server:
+    /// <list type="number">
+    ///   <item><description>Call <see cref="PasswordlessLoginAsync"/>(InitialAdmin) — returns an
+    ///     InitialAdmin token, which this client caches automatically.</description></item>
+    ///   <item><description>Call <see cref="ClaimServerAsync"/> — the client attaches the cached
+    ///     InitialAdmin token as the bearer (the claim is rejected without it) and the server returns
+    ///     the real admin token.</description></item>
+    ///   <item><description>The client adopts the returned admin token, replacing the InitialAdmin
+    ///     token for all subsequent calls.</description></item>
+    /// </list>
+    /// </para>
+    /// <para>
+    /// Calling ClaimServer without first performing the InitialAdmin passwordless login (so no token is
+    /// cached) fails fast with a <see cref="DedicatedServerAuthException"/> rather than sending an
+    /// unauthenticated claim.
+    /// </para>
+    /// </remarks>
     Task<AuthenticationTokenResponse> ClaimServerAsync(
         ClaimServerRequest request,
         CancellationToken cancellationToken = default);
@@ -184,7 +223,12 @@ public interface IDedicatedServerApiClient
     /// never buffered whole in memory. NON-IDEMPOTENT.
     /// </summary>
     /// <param name="request">Upload metadata (target name, whether to load).</param>
-    /// <param name="saveGameContent">The save file bytes; read (not owned) by this call.</param>
+    /// <param name="saveGameContent">
+    /// The save file bytes. <b>Ownership transfers to this call: the stream is disposed</b> when the
+    /// request completes (it is wrapped in the multipart body, which this method disposes). Callers
+    /// must not reuse or dispose it afterwards. (If the call fails fast on a missing token, the stream
+    /// is NOT disposed — it was never wrapped — so the caller still owns it in that one case.)
+    /// </param>
     /// <param name="cancellationToken">Cancellation.</param>
     Task UploadSaveGameAsync(
         UploadSaveGameRequest request,

@@ -140,36 +140,97 @@ public sealed class DedicatedServerApiClientTests
     }
 
     [Fact]
-    public async Task UnauthenticatedFunction_DoesNotAttachBearer()
+    public async Task NoneAuthFunction_NeverAttachesBearer_EvenWithCachedToken()
     {
-        // Arrange: HealthCheck requires no auth.
+        // Arrange: PasswordLogin is AuthMode.None — it exchanges a password FOR a token, so it must
+        // NEVER attach a bearer even when one happens to be cached (e.g. a config token is present).
+        // (HealthCheck/QueryServerState, by contrast, are AttachIfAvailable and DO attach when held —
+        // see NoPrivilegeRead_WithCachedToken_AttachesBearer.)
         (DedicatedServerApiClient client, RecordingHandler handler) =
             DedicatedServerTestHarness.CreateWithConfigToken((_, _) =>
-                DedicatedServerTestHarness.SuccessEnvelope(
-                    "{\"health\":\"healthy\",\"serverCustomData\":\"\"}"));
+                DedicatedServerTestHarness.SuccessEnvelope("{\"authenticationToken\":\"tok\"}"));
 
         // Act
-        HealthCheckResponse response = await client.HealthCheckAsync();
+        await client.PasswordLoginAsync(new PasswordLoginRequest(ApiPrivilegeLevel.Administrator, "pw"));
 
         // Assert
         CapturedRequest request = Assert.Single(handler.Requests);
         Assert.Null(request.AuthorizationScheme);
-        Assert.Equal("healthy", response.Health);
     }
 
     [Fact]
-    public async Task AuthenticatedCall_WithNoToken_ThrowsAuthException_WithoutSending()
+    public async Task RequiredAuthCall_WithNoToken_ThrowsAuthException_WithoutSending()
     {
-        // Arrange: no config token, no prior login.
+        // Arrange: no config token, no prior login. EnumerateSessions REQUIRES Admin per the spec, so
+        // it must fail fast without a token rather than sending an unauthenticated request.
         (DedicatedServerApiClient client, RecordingHandler handler) =
             DedicatedServerTestHarness.CreateWithoutToken((_, _) =>
                 DedicatedServerTestHarness.SuccessEnvelope("{}"));
 
         // Act + Assert: fails fast with an actionable auth error and never hits the wire.
         DedicatedServerAuthException ex = await Assert.ThrowsAsync<DedicatedServerAuthException>(
-            () => client.QueryServerStateAsync());
+            () => client.EnumerateSessionsAsync());
         Assert.Equal("no_credentials", ex.ErrorCode);
         Assert.Equal(0, handler.AttemptCount);
+    }
+
+    [Theory]
+    [InlineData("QueryServerState")]
+    [InlineData("HealthCheck")]
+    [InlineData("GetServerOptions")]
+    [InlineData("GetAdvancedGameSettings")]
+    public async Task NoPrivilegeReads_WorkTokenless_AndAttachNoBearer(string function)
+    {
+        // Arrange: a tokenless bootstrap host (no config token, no login). The spec marks these reads
+        // as requiring no privilege, so the client must SEND them (not fail with no_credentials) and
+        // must NOT attach a bearer (there is none). This is the pre-claim "what state is this server
+        // in?" path the bootstrap mode (C6) depends on.
+        (DedicatedServerApiClient client, RecordingHandler handler) =
+            DedicatedServerTestHarness.CreateWithoutToken((req, _) => req.Function switch
+            {
+                "HealthCheck" => DedicatedServerTestHarness.SuccessEnvelope(
+                    "{\"health\":\"healthy\",\"serverCustomData\":\"\"}"),
+                "GetServerOptions" => DedicatedServerTestHarness.SuccessEnvelope(
+                    "{\"serverOptions\":{},\"pendingServerOptions\":{}}"),
+                "GetAdvancedGameSettings" => DedicatedServerTestHarness.SuccessEnvelope(
+                    "{\"creativeModeEnabled\":false,\"advancedGameSettings\":{}}"),
+                _ => DedicatedServerTestHarness.SuccessEnvelope(
+                    "{\"serverGameState\":{\"activeSessionName\":\"\",\"numConnectedPlayers\":0," +
+                    "\"playerLimit\":4,\"techTier\":0,\"activeSchematic\":\"\",\"gamePhase\":\"\"," +
+                    "\"isGameRunning\":false,\"totalGameDuration\":0,\"isGamePaused\":false," +
+                    "\"averageTickRate\":0.0,\"autoLoadSessionName\":\"\"}}"),
+            });
+
+        // Act: the call succeeds tokenless...
+        await InvokeByName(client, function);
+
+        // Assert: ...it was actually sent, with no Authorization header.
+        CapturedRequest request = Assert.Single(handler.Requests);
+        Assert.Equal(function, request.Function);
+        Assert.Null(request.AuthorizationScheme);
+    }
+
+    [Fact]
+    public async Task NoPrivilegeRead_WithCachedToken_AttachesBearer()
+    {
+        // Arrange: a no-privilege read on a host that DOES hold a config token. The token is harmless
+        // and useful (a privileged caller may see privileged fields), so it should be attached when
+        // available even though it is not required.
+        (DedicatedServerApiClient client, RecordingHandler handler) =
+            DedicatedServerTestHarness.CreateWithConfigToken((_, _) =>
+                DedicatedServerTestHarness.SuccessEnvelope(
+                    "{\"serverGameState\":{\"activeSessionName\":\"\",\"numConnectedPlayers\":0," +
+                    "\"playerLimit\":4,\"techTier\":0,\"activeSchematic\":\"\",\"gamePhase\":\"\"," +
+                    "\"isGameRunning\":false,\"totalGameDuration\":0,\"isGamePaused\":false," +
+                    "\"averageTickRate\":0.0,\"autoLoadSessionName\":\"\"}}"));
+
+        // Act
+        await client.QueryServerStateAsync();
+
+        // Assert: AttachIfAvailable attached the cached token.
+        CapturedRequest request = Assert.Single(handler.Requests);
+        Assert.Equal("Bearer", request.AuthorizationScheme);
+        Assert.Equal(DedicatedServerTestHarness.ConfigToken, request.AuthorizationToken);
     }
 
     // ----- AllowRetry opt-in (idempotent functions ONLY) -----------------------------------------
@@ -270,6 +331,110 @@ public sealed class DedicatedServerApiClientTests
 
         // Assert
         Assert.Equal("server_claimed", ex.ErrorCode);
+    }
+
+    // ----- ClaimServer carries the InitialAdmin bearer (two-step claim flow) ----------------------
+
+    [Fact]
+    public async Task ClaimServer_AttachesCachedBearer()
+    {
+        // Arrange: a token is already cached (here via config; in practice the InitialAdmin token from
+        // a prior PasswordlessLogin). ClaimServer REQUIRES the InitialAdmin privilege, so it must send
+        // that token as the bearer — the spec rejects an unauthenticated claim.
+        (DedicatedServerApiClient client, RecordingHandler handler) =
+            DedicatedServerTestHarness.CreateWithConfigToken((_, _) =>
+                DedicatedServerTestHarness.SuccessEnvelope("{\"authenticationToken\":\"admin-tok\"}"));
+
+        // Act
+        await client.ClaimServerAsync(new ClaimServerRequest("My Server", "adminpw"));
+
+        // Assert: the claim carried the cached bearer.
+        CapturedRequest request = Assert.Single(handler.Requests);
+        Assert.Equal("ClaimServer", request.Function);
+        Assert.Equal("Bearer", request.AuthorizationScheme);
+        Assert.Equal(DedicatedServerTestHarness.ConfigToken, request.AuthorizationToken);
+    }
+
+    [Fact]
+    public async Task TwoStepClaim_PasswordlessInitialAdmin_ThenClaim_SendsInitialAdminTokenAndAdoptsAdminToken()
+    {
+        // Arrange: model the real bootstrap of a never-claimed server with NO config token.
+        //   1. PasswordlessLogin(InitialAdmin) -> InitialAdmin token (no bearer attached; it mints one)
+        //   2. ClaimServer -> sent WITH the InitialAdmin bearer; returns the real admin token
+        //   3. client adopts the admin token; a later authenticated call presents it (not InitialAdmin)
+        (DedicatedServerApiClient client, RecordingHandler handler) =
+            DedicatedServerTestHarness.CreateWithoutToken((req, _) => req.Function switch
+            {
+                "PasswordlessLogin" => DedicatedServerTestHarness.SuccessEnvelope(
+                    "{\"authenticationToken\":\"initial-admin-token\"}"),
+                "ClaimServer" => DedicatedServerTestHarness.SuccessEnvelope(
+                    "{\"authenticationToken\":\"real-admin-token\"}"),
+                _ => DedicatedServerTestHarness.SuccessEnvelope(
+                    "{\"sessions\":[],\"currentSessionIndex\":-1}"),
+            });
+
+        // Act
+        AuthenticationTokenResponse initial = await client.PasswordlessLoginAsync(
+            new PasswordlessLoginRequest(ApiPrivilegeLevel.InitialAdmin));
+        AuthenticationTokenResponse claimed = await client.ClaimServerAsync(
+            new ClaimServerRequest("My Server", "adminpw"));
+        await client.EnumerateSessionsAsync();
+
+        // Assert: step 1 attached no bearer and yielded the InitialAdmin token.
+        CapturedRequest passwordless = handler.Requests[0];
+        Assert.Equal("PasswordlessLogin", passwordless.Function);
+        Assert.Equal("InitialAdmin", passwordless.Data!.Value.GetProperty("minimumPrivilegeLevel").GetString());
+        Assert.Null(passwordless.AuthorizationScheme);
+        Assert.Equal("initial-admin-token", initial.AuthenticationToken);
+
+        // ...step 2 (the claim) carried the InitialAdmin token as the bearer...
+        CapturedRequest claim = handler.Requests[1];
+        Assert.Equal("ClaimServer", claim.Function);
+        Assert.Equal("initial-admin-token", claim.AuthorizationToken);
+        Assert.Equal("real-admin-token", claimed.AuthenticationToken);
+
+        // ...and step 3 (a later admin call) presents the ADOPTED real admin token, not InitialAdmin.
+        CapturedRequest followUp = handler.Requests[^1];
+        Assert.Equal("EnumerateSessions", followUp.Function);
+        Assert.Equal("real-admin-token", followUp.AuthorizationToken);
+    }
+
+    // ----- HealthCheck null-data pattern ---------------------------------------------------------
+
+    [Fact]
+    public async Task HealthCheck_WithNoCustomData_OmitsDataObject()
+    {
+        // Arrange: a bare liveness probe should send just { "function": "HealthCheck" } with no "data"
+        // (the null-data pattern the other parameterless reads use), not an empty clientCustomData.
+        (DedicatedServerApiClient client, RecordingHandler handler) =
+            DedicatedServerTestHarness.CreateWithConfigToken((_, _) =>
+                DedicatedServerTestHarness.SuccessEnvelope(
+                    "{\"health\":\"healthy\",\"serverCustomData\":\"\"}"));
+
+        // Act
+        await client.HealthCheckAsync();
+
+        // Assert: no data object on the wire.
+        CapturedRequest request = Assert.Single(handler.Requests);
+        Assert.Equal("HealthCheck", request.Function);
+        Assert.Null(request.Data);
+    }
+
+    [Fact]
+    public async Task HealthCheck_WithCustomData_MaterializesDataObject()
+    {
+        // Arrange: when custom data IS supplied, it must be sent under data.clientCustomData.
+        (DedicatedServerApiClient client, RecordingHandler handler) =
+            DedicatedServerTestHarness.CreateWithConfigToken((_, _) =>
+                DedicatedServerTestHarness.SuccessEnvelope(
+                    "{\"health\":\"healthy\",\"serverCustomData\":\"\"}"));
+
+        // Act
+        await client.HealthCheckAsync(new HealthCheckRequest("ping-42"));
+
+        // Assert
+        CapturedRequest request = Assert.Single(handler.Requests);
+        Assert.Equal("ping-42", request.Data!.Value.GetProperty("clientCustomData").GetString());
     }
 
     // ----- 401 re-auth / replay semantics --------------------------------------------------------
@@ -642,6 +807,8 @@ public sealed class DedicatedServerApiClientTests
     {
         "QueryServerState" => client.QueryServerStateAsync(),
         "HealthCheck" => client.HealthCheckAsync(),
+        "GetServerOptions" => client.GetServerOptionsAsync(),
+        "GetAdvancedGameSettings" => client.GetAdvancedGameSettingsAsync(),
         "VerifyAuthenticationToken" => client.VerifyAuthenticationTokenAsync(),
         "EnumerateSessions" => client.EnumerateSessionsAsync(),
         "SaveGame" => client.SaveGameAsync(new SaveGameRequest("S")),

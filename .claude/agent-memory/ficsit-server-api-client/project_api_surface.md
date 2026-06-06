@@ -50,10 +50,24 @@ real name is `EnumerateSessions`.
   on failure. We branch on Content-Type: JSON → map error; else stream binary to destination.
 
 **errorCode → exception mapping** (in `DedicatedServerApiClient.IsAuthErrorCode`):
-auth codes (`wrong_password`, `unauthorized`, `invalid_token`, `token_expired`,
-`insufficient_privilege`, `passwordless_login_not_possible`) + any 401 → `DedicatedServerAuthException`.
-All other codes (e.g. `server_claimed`, `save_game_load_failed`, `file_not_found`,
-`enumerate_sessions_failed`, `delete_save_*_failed`) → `DedicatedServerApiException` carrying
-ErrorCode/ServerMessage/ErrorData/HttpStatusCode.
+the 6 auth codes are named constants in `ApiErrorCodes.cs` (beside `ApiFunctions`), PR #34 FIX 6:
+`WrongPassword`/`Unauthorized`/`InvalidToken`/`TokenExpired`/`InsufficientPrivilege`/
+`PasswordlessLoginNotPossible` (+ any 401) → `DedicatedServerAuthException`. All other codes (e.g.
+`server_claimed`, `save_game_load_failed`, `file_not_found`) → `DedicatedServerApiException` carrying
+ErrorCode/ServerMessage/ErrorData/HttpStatusCode. `IsJsonResponse` compares media type
+**OrdinalIgnoreCase** (RFC: media types are case-insensitive), PR #34 FIX 4.
+
+**Wiki privilege table (verified 2026-06-06, drives `AuthMode`):** no-privilege = HealthCheck,
+QueryServerState, GetServerOptions, GetAdvancedGameSettings, PasswordLogin, PasswordlessLogin.
+**EnumerateSessions requires Admin** (the exception among the reads). ClaimServer requires InitialAdmin
+(see [[project-auth-lifecycle]]). VerifyAuthenticationToken requires a token (validates it).
+
+**Fixture round-trip tests (PR #34 FIX 2):** `DedicatedServerFixtureTests` loads each fixture from
+`AppContext.BaseDirectory/Fixtures/DedicatedServer/` and deserializes via `DedicatedServerJsonContext`
+(success→`DedicatedServerSuccessEnvelope<T>`, error→`DedicatedServerErrorEnvelope` incl. errorData,
+request→`DedicatedServerRequestEnvelope` incl. bSkipOnboarding). Before this the 10 fixtures were
+copied to output but read by ZERO tests (drift undetectable). `UploadSaveGame` now OWNS+disposes its
+save stream (multipart wraps it); token check hoisted ABOVE BuildMultipartUpload so a tokenless throw
+doesn't dispose the caller's stream as collateral (PR #34 FIX 3).
 
 See [[project-auth-lifecycle]] and [[project-client-layout]].

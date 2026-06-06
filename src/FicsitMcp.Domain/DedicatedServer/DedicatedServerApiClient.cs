@@ -88,7 +88,8 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             request,
             DedicatedServerJsonContext.Default.PasswordlessLoginRequest,
             DedicatedServerJsonContext.Default.DedicatedServerSuccessEnvelopeAuthenticationTokenResponse,
-            authenticated: false,
+            // No token can exist yet — this is one of the functions that MINTS one.
+            authMode: AuthMode.None,
             idempotent: true,
             cancellationToken).ConfigureAwait(false);
         await AdoptTokenAsync(response.AuthenticationToken, cancellationToken).ConfigureAwait(false);
@@ -106,7 +107,8 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             request,
             DedicatedServerJsonContext.Default.PasswordLoginRequest,
             DedicatedServerJsonContext.Default.DedicatedServerSuccessEnvelopeAuthenticationTokenResponse,
-            authenticated: false,
+            // No token required — this function exchanges the password FOR a token.
+            authMode: AuthMode.None,
             // PasswordLogin is effectively idempotent (same password → same outcome) and has no side
             // effect to double-fire, so it may be retried on transient transport faults.
             idempotent: true,
@@ -121,7 +123,8 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             ApiFunctions.VerifyAuthenticationToken,
             data: (object?)null,
             requestTypeInfo: null,
-            authenticated: true,
+            // Requires a token: this function exists to validate the one currently held.
+            authMode: AuthMode.Required,
             idempotent: true,
             cancellationToken);
 
@@ -130,15 +133,26 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
     /// <inheritdoc />
     public Task<HealthCheckResponse> HealthCheckAsync(
         HealthCheckRequest? request = null,
-        CancellationToken cancellationToken = default) =>
-        InvokeAsync(
+        CancellationToken cancellationToken = default)
+    {
+        // Match the null-data pattern the other parameterless reads use: only materialize a request
+        // record (and thus a "data" object on the wire) when the caller actually supplied custom data.
+        // A bare liveness probe sends just { "function": "HealthCheck" } with no "data".
+        HealthCheckRequest? payload =
+            request is { ClientCustomData.Length: > 0 } ? request : null;
+
+        return InvokeAsync(
             ApiFunctions.HealthCheck,
-            request ?? new HealthCheckRequest(),
+            payload,
             DedicatedServerJsonContext.Default.HealthCheckRequest,
             DedicatedServerJsonContext.Default.DedicatedServerSuccessEnvelopeHealthCheckResponse,
-            authenticated: false,
+            // Spec: HealthCheck requires no privilege. Attach a token if we have one (harmless; lets a
+            // privileged caller's request be recognized) but never require one — a tokenless bootstrap
+            // host must be able to probe liveness before any token exists.
+            authMode: AuthMode.AttachIfAvailable,
             idempotent: true,
             cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<QueryServerStateResponse> QueryServerStateAsync(CancellationToken cancellationToken = default) =>
@@ -147,7 +161,10 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             data: null,
             requestTypeInfo: null,
             DedicatedServerJsonContext.Default.DedicatedServerSuccessEnvelopeQueryServerStateResponse,
-            authenticated: true,
+            // Spec: QueryServerState requires no privilege. Attach a token if held, but do NOT require
+            // one — this is exactly the pre-claim "is this server unclaimed/what state is it in?" probe
+            // a tokenless bootstrap host needs.
+            authMode: AuthMode.AttachIfAvailable,
             idempotent: true,
             cancellationToken);
 
@@ -158,7 +175,8 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             data: null,
             requestTypeInfo: null,
             DedicatedServerJsonContext.Default.DedicatedServerSuccessEnvelopeGetServerOptionsResponse,
-            authenticated: true,
+            // Spec: GetServerOptions requires no privilege. Attach if held; do not require.
+            authMode: AuthMode.AttachIfAvailable,
             idempotent: true,
             cancellationToken);
 
@@ -169,7 +187,8 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             data: null,
             requestTypeInfo: null,
             DedicatedServerJsonContext.Default.DedicatedServerSuccessEnvelopeGetAdvancedGameSettingsResponse,
-            authenticated: true,
+            // Spec: GetAdvancedGameSettings requires no privilege. Attach if held; do not require.
+            authMode: AuthMode.AttachIfAvailable,
             idempotent: true,
             cancellationToken);
 
@@ -180,8 +199,9 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             data: null,
             requestTypeInfo: null,
             DedicatedServerJsonContext.Default.DedicatedServerSuccessEnvelopeEnumerateSessionsResponse,
-            // EnumerateSessions is a pure read; idempotent so a transient blip may be retried.
-            authenticated: true,
+            // Spec: EnumerateSessions REQUIRES Admin privilege — unlike the other reads, a token is
+            // mandatory here. It is a pure read though, so idempotent: a transient blip may be retried.
+            authMode: AuthMode.Required,
             idempotent: true,
             cancellationToken);
 
@@ -198,10 +218,18 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             request,
             DedicatedServerJsonContext.Default.ClaimServerRequest,
             DedicatedServerJsonContext.Default.DedicatedServerSuccessEnvelopeAuthenticationTokenResponse,
-            // Claim grants InitialAdmin implicitly on a never-claimed server; no bearer is attached.
-            authenticated: false,
-            // One-shot side effect: never retry.
+            // ClaimServer requires the InitialAdmin privilege, which is ONLY obtained by a prior
+            // PasswordlessLogin(InitialAdmin) on a never-claimed server. That call seeds the cache with
+            // an InitialAdmin token, which we MUST present here as the bearer — ClaimServer is rejected
+            // without it. On success the server returns the real admin token, which AdoptTokenAsync then
+            // replaces the InitialAdmin token with for all subsequent calls.
+            authMode: AuthMode.Required,
+            // One-shot side effect: never retry, and never re-auth/replay a 401 (the InitialAdmin token
+            // is single-use bootstrap state with no config token to re-present). A 401 here is a clean
+            // auth failure (InitialAdmin token missing/rejected), not an ambiguous side effect, so we
+            // surface it as an auth error rather than DedicatedServerAmbiguousResultException.
             idempotent: false,
+            allowReauth: false,
             cancellationToken).ConfigureAwait(false);
         await AdoptTokenAsync(response.AuthenticationToken, cancellationToken).ConfigureAwait(false);
         return response;
@@ -215,7 +243,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             ApiFunctions.RenameServer,
             request,
             DedicatedServerJsonContext.Default.RenameServerRequest,
-            authenticated: true,
+            authMode: AuthMode.Required,
             idempotent: false,
             cancellationToken);
     }
@@ -228,7 +256,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             ApiFunctions.SetClientPassword,
             request,
             DedicatedServerJsonContext.Default.SetClientPasswordRequest,
-            authenticated: true,
+            authMode: AuthMode.Required,
             idempotent: false,
             cancellationToken);
     }
@@ -256,7 +284,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             ApiFunctions.SetAdminPassword,
             request,
             DedicatedServerJsonContext.Default.SetAdminPasswordRequest,
-            authenticated: true,
+            authMode: AuthMode.Required,
             idempotent: false,
             allowReauth: false,
             cancellationToken).ConfigureAwait(false);
@@ -272,7 +300,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             ApiFunctions.SetAutoLoadSessionName,
             request,
             DedicatedServerJsonContext.Default.SetAutoLoadSessionNameRequest,
-            authenticated: true,
+            authMode: AuthMode.Required,
             idempotent: false,
             cancellationToken);
     }
@@ -285,7 +313,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             ApiFunctions.ApplyServerOptions,
             request,
             DedicatedServerJsonContext.Default.ApplyServerOptionsRequest,
-            authenticated: true,
+            authMode: AuthMode.Required,
             idempotent: false,
             cancellationToken);
     }
@@ -298,7 +326,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             ApiFunctions.ApplyAdvancedGameSettings,
             request,
             DedicatedServerJsonContext.Default.ApplyAdvancedGameSettingsRequest,
-            authenticated: true,
+            authMode: AuthMode.Required,
             idempotent: false,
             cancellationToken);
     }
@@ -314,7 +342,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             request,
             DedicatedServerJsonContext.Default.RunCommandRequest,
             DedicatedServerJsonContext.Default.DedicatedServerSuccessEnvelopeRunCommandResponse,
-            authenticated: true,
+            authMode: AuthMode.Required,
             // RunCommand is the sharp knife: never retried, and a 401 mid-flight is ambiguous.
             idempotent: false,
             cancellationToken);
@@ -326,7 +354,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             ApiFunctions.Shutdown,
             data: (object?)null,
             requestTypeInfo: null,
-            authenticated: true,
+            authMode: AuthMode.Required,
             idempotent: false,
             cancellationToken);
 
@@ -340,7 +368,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             ApiFunctions.CreateNewGame,
             request,
             DedicatedServerJsonContext.Default.CreateNewGameRequest,
-            authenticated: true,
+            authMode: AuthMode.Required,
             idempotent: false,
             cancellationToken);
     }
@@ -353,7 +381,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             ApiFunctions.SaveGame,
             request,
             DedicatedServerJsonContext.Default.SaveGameRequest,
-            authenticated: true,
+            authMode: AuthMode.Required,
             idempotent: false,
             cancellationToken);
     }
@@ -366,7 +394,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             ApiFunctions.LoadGame,
             request,
             DedicatedServerJsonContext.Default.LoadGameRequest,
-            authenticated: true,
+            authMode: AuthMode.Required,
             idempotent: false,
             cancellationToken);
     }
@@ -379,7 +407,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             ApiFunctions.DeleteSaveFile,
             request,
             DedicatedServerJsonContext.Default.DeleteSaveFileRequest,
-            authenticated: true,
+            authMode: AuthMode.Required,
             idempotent: false,
             cancellationToken);
     }
@@ -392,7 +420,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             ApiFunctions.DeleteSaveSession,
             request,
             DedicatedServerJsonContext.Default.DeleteSaveSessionRequest,
-            authenticated: true,
+            authMode: AuthMode.Required,
             idempotent: false,
             cancellationToken);
     }
@@ -406,13 +434,21 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(saveGameContent);
 
+        // Resolve the token BEFORE building the multipart body. BuildMultipartUpload wraps
+        // saveGameContent in a StreamContent that this method then takes ownership of and disposes
+        // (the `using` on `message` disposes the MultipartFormDataContent, which disposes saveGameContent
+        // with it). If RequireToken() threw AFTER the body was built, that `using` would dispose the
+        // caller's stream as collateral damage on a request we never even attempted to send — so we
+        // fail fast here, before the stream is ever wrapped/owned.
+        string token = RequireToken();
+
         // Multipart upload is non-idempotent (writes a file, may load it) and is NOT retried — for
         // two independent reasons: (1) the write is a side effect that must not double-fire, and
         // (2) the multipart body is backed by a FORWARD-ONLY save stream that cannot be replayed even
         // if we wanted to. So we always single-attempt (no AllowRetry, no 401 re-auth) and surface
         // auth failures as-is.
         using HttpRequestMessage message = BuildMultipartUpload(request, saveGameContent);
-        ApplyAuth(message, RequireToken());
+        ApplyAuth(message, token);
 
         using HttpResponseMessage response =
             await _httpFactory().SendAsync(message, cancellationToken).ConfigureAwait(false);
@@ -442,7 +478,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
         using HttpResponseMessage response = await SendWithReauthAsync(
             ApiFunctions.DownloadSaveGame,
             () => BuildEnvelopeRequest(ApiFunctions.DownloadSaveGame, dataElement, allowRetry: true),
-            authenticated: true,
+            authMode: AuthMode.Required,
             idempotent: true,
             allowReauth: true,
             cancellationToken,
@@ -470,7 +506,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             // A 401 that survived re-auth/replay (no config token, or the config token was also
             // rejected) — surface it as the auth error, not a generic content-type failure.
             throw new DedicatedServerAuthException(
-                "unauthorized", "Authentication token was rejected.", httpStatusCode: 401);
+                ApiErrorCodes.Unauthorized, "Authentication token was rejected.", httpStatusCode: 401);
         }
 
         if (!response.IsSuccessStatusCode)
@@ -503,7 +539,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
         using HttpResponseMessage response = await SendWithReauthAsync(
             function,
             () => BuildEnvelopeRequest(function, data, allowRetry),
-            authenticated: true,
+            authMode: AuthMode.Required,
             idempotent: allowRetry,
             allowReauth: true,
             cancellationToken).ConfigureAwait(false);
@@ -529,13 +565,25 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
 
     // ====== Core send pipeline ===================================================================
 
+    private Task<TResponse> InvokeAsync<TRequest, TResponse>(
+        string function,
+        TRequest data,
+        System.Text.Json.Serialization.Metadata.JsonTypeInfo<TRequest>? requestTypeInfo,
+        System.Text.Json.Serialization.Metadata.JsonTypeInfo<DedicatedServerSuccessEnvelope<TResponse>> responseTypeInfo,
+        AuthMode authMode,
+        bool idempotent,
+        CancellationToken cancellationToken)
+        where TResponse : class
+        => InvokeAsync(function, data, requestTypeInfo, responseTypeInfo, authMode, idempotent, allowReauth: true, cancellationToken);
+
     private async Task<TResponse> InvokeAsync<TRequest, TResponse>(
         string function,
         TRequest data,
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<TRequest>? requestTypeInfo,
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<DedicatedServerSuccessEnvelope<TResponse>> responseTypeInfo,
-        bool authenticated,
+        AuthMode authMode,
         bool idempotent,
+        bool allowReauth,
         CancellationToken cancellationToken)
         where TResponse : class
     {
@@ -546,9 +594,9 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
         using HttpResponseMessage response = await SendWithReauthAsync(
             function,
             () => BuildEnvelopeRequest(function, dataElement, allowRetry: idempotent),
-            authenticated,
+            authMode,
             idempotent,
-            allowReauth: true,
+            allowReauth,
             cancellationToken).ConfigureAwait(false);
 
         byte[] body = await ReadBodyBytesAsync(response, cancellationToken).ConfigureAwait(false);
@@ -570,7 +618,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
         TRequest data,
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<TRequest> requestTypeInfo,
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<DedicatedServerSuccessEnvelope<TResponse>> responseTypeInfo,
-        bool authenticated,
+        AuthMode authMode,
         bool idempotent,
         CancellationToken cancellationToken)
         where TResponse : class
@@ -580,7 +628,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
         using HttpResponseMessage response = await SendWithReauthAsync(
             function,
             () => BuildEnvelopeRequest(function, dataElement, allowRetry: idempotent),
-            authenticated,
+            authMode,
             idempotent,
             allowReauth: true,
             cancellationToken).ConfigureAwait(false);
@@ -602,16 +650,16 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
         string function,
         TRequest? data,
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<TRequest>? requestTypeInfo,
-        bool authenticated,
+        AuthMode authMode,
         bool idempotent,
         CancellationToken cancellationToken)
-        => InvokeNoContentAsync(function, data, requestTypeInfo, authenticated, idempotent, allowReauth: true, cancellationToken);
+        => InvokeNoContentAsync(function, data, requestTypeInfo, authMode, idempotent, allowReauth: true, cancellationToken);
 
     private async Task InvokeNoContentAsync<TRequest>(
         string function,
         TRequest? data,
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<TRequest>? requestTypeInfo,
-        bool authenticated,
+        AuthMode authMode,
         bool idempotent,
         bool allowReauth,
         CancellationToken cancellationToken)
@@ -623,7 +671,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
         using HttpResponseMessage response = await SendWithReauthAsync(
             function,
             () => BuildEnvelopeRequest(function, dataElement, allowRetry: idempotent),
-            authenticated,
+            authMode,
             idempotent,
             allowReauth,
             cancellationToken).ConfigureAwait(false);
@@ -650,22 +698,33 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
     private async Task<HttpResponseMessage> SendWithReauthAsync(
         string function,
         Func<HttpRequestMessage> requestFactory,
-        bool authenticated,
+        AuthMode authMode,
         bool idempotent,
         bool allowReauth,
         CancellationToken cancellationToken,
         HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead)
     {
         HttpRequestMessage first = requestFactory();
-        if (authenticated)
+        // Required: attach and fail fast if no token is held. AttachIfAvailable: attach only when a
+        // token is cached (the function works tokenless, so a missing token is NOT an error — this is
+        // what lets a bootstrap host run pre-claim reads). None: never attach.
+        string? attachedToken = authMode switch
         {
-            ApplyAuth(first, RequireToken());
+            AuthMode.Required => RequireToken(),
+            AuthMode.AttachIfAvailable => _cachedToken,
+            _ => null,
+        };
+        if (attachedToken is not null)
+        {
+            ApplyAuth(first, attachedToken);
         }
 
         HttpResponseMessage response =
             await _httpFactory().SendAsync(first, completionOption, cancellationToken).ConfigureAwait(false);
 
-        if (response.StatusCode != HttpStatusCode.Unauthorized || !authenticated || !allowReauth)
+        // Re-auth/replay only makes sense when we actually attached a token that could be rejected. For
+        // None/AttachIfAvailable-without-a-token there is nothing to refresh, so surface the response.
+        if (response.StatusCode != HttpStatusCode.Unauthorized || attachedToken is null || !allowReauth)
         {
             // Success/normal path: the response (and the request it references) is returned to the
             // caller, whose `using` disposes both. Do NOT dispose `first` here.
@@ -680,7 +739,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             response.Dispose();
             first.Dispose();
             throw new DedicatedServerAmbiguousResultException(
-                function, "unauthorized", "the authentication token was rejected");
+                function, ApiErrorCodes.Unauthorized, "the authentication token was rejected");
         }
 
         // Idempotent: try to obtain a fresh token and replay exactly once.
@@ -813,8 +872,14 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
         // with no intermediate MemoryStream/JsonDocument allocation.
         JsonSerializer.SerializeToElement(value, typeInfo);
 
-    private static bool IsJsonResponse(HttpResponseMessage response) =>
-        response.Content.Headers.ContentType?.MediaType is "application/json" or "text/json";
+    private static bool IsJsonResponse(HttpResponseMessage response)
+    {
+        // Media types are case-insensitive per RFC 9110 §8.3.1, so compare ordinal-ignore-case rather
+        // than against fixed-case literals (a server emitting "Application/JSON" is still JSON).
+        string? mediaType = response.Content.Headers.ContentType?.MediaType;
+        return string.Equals(mediaType, "application/json", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(mediaType, "text/json", StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>
     /// Buffers the response body once so it can be inspected for an error envelope AND deserialized
@@ -859,7 +924,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 throw new DedicatedServerAuthException(
-                    "unauthorized", "Authentication token was rejected.", httpStatusCode: 401);
+                    ApiErrorCodes.Unauthorized, "Authentication token was rejected.", httpStatusCode: 401);
             }
 
             return;
@@ -870,7 +935,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 throw new DedicatedServerAuthException(
-                    "unauthorized", "Authentication token was rejected.", httpStatusCode: 401);
+                    ApiErrorCodes.Unauthorized, "Authentication token was rejected.", httpStatusCode: 401);
             }
 
             return;
@@ -921,7 +986,7 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
     {
         if (status == HttpStatusCode.Unauthorized)
         {
-            return new DedicatedServerAuthException("unauthorized", "Authentication token was rejected.", httpStatusCode: 401);
+            return new DedicatedServerAuthException(ApiErrorCodes.Unauthorized, "Authentication token was rejected.", httpStatusCode: 401);
         }
 
         return new DedicatedServerApiException(
@@ -931,10 +996,10 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDispo
     }
 
     private static bool IsAuthErrorCode(string errorCode) =>
-        errorCode is "wrong_password"
-            or "unauthorized"
-            or "invalid_token"
-            or "token_expired"
-            or "insufficient_privilege"
-            or "passwordless_login_not_possible";
+        errorCode is ApiErrorCodes.WrongPassword
+            or ApiErrorCodes.Unauthorized
+            or ApiErrorCodes.InvalidToken
+            or ApiErrorCodes.TokenExpired
+            or ApiErrorCodes.InsufficientPrivilege
+            or ApiErrorCodes.PasswordlessLoginNotPossible;
 }

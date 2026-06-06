@@ -5,8 +5,10 @@ Captured/representative wire envelopes for the official Satisfactory Dedicated S
 community OpenAPI spec (api version 0.2.1). All secrets (passwords, bearer tokens) are **redacted**
 to placeholder values — never commit a real token.
 
-These exist so `mcp-test-harness-engineer` (#22) and the client tests can exercise every code path
-without a live server:
+These are loaded and asserted by `DedicatedServerFixtureTests` (a Theory that deserializes each
+response fixture against its DTO via `DedicatedServerJsonContext` and checks the request fixtures'
+envelope shape), so wire drift against these captures is caught rather than silent. They also serve
+`mcp-test-harness-engineer` (#22) for higher-level paths:
 
 | File | Path exercised |
 |---|---|
