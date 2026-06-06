@@ -2,6 +2,7 @@ using FicsitMcp.Configuration;
 using FicsitMcp.Domain;
 using FicsitMcp.Domain.GameData;
 using FicsitMcp.Domain.GameData.Model;
+using FicsitMcp.Http;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -37,6 +38,12 @@ builder.Services.AddSurfaceOptions(builder.Configuration);
 
 // Domain services the tools depend on. Tools stay thin and resolve these via DI.
 builder.Services.AddSingleton<IServerInfoProvider, ServerInfoProvider>();
+
+// Per-surface HTTP plumbing: named/typed clients via IHttpClientFactory (one per surface), the
+// trust-on-first-use TLS pin store, and the shared resilience pipeline. Each client takes its
+// BaseAddress from its surface options at resolution time, so a client built for an unconfigured
+// surface fails fast naming the env var. Surface clients NEVER new up HttpClient.
+builder.Services.AddSurfaceHttpClients();
 
 // Game-data layer: bind the optional Docs.json override, load the snapshot ONCE at
 // startup (shipped embedded asset, or the override file if configured), and expose it as
