@@ -1,0 +1,50 @@
+[
+  {
+    "ID": "Build_ConstructorMk1_C_2147480001",
+    "Name": "Constructor",
+    "ClassName": "Build_ConstructorMk1_C",
+    "location": { "x": 125000.5, "y": -34000.25, "z": 12000.0, "rotation": 90.0 },
+    "BoundingBox": { "min": { "x": 0, "y": 0, "z": 0 }, "max": { "x": 1, "y": 1, "z": 1 } },
+    "ColorSlot": { "PrimaryColor": {}, "SecondaryColor": {} },
+    "Recipe": "Iron Plate",
+    "RecipeClassName": "Recipe_IronPlate_C",
+    "production": [
+      { "Name": "Iron Plate", "ClassName": "Desc_IronPlate_C", "Amount": 0, "CurrentProd": 20.0, "MaxProd": 20.0, "ProdPercent": 100.0 }
+    ],
+    "ingredients": [
+      { "Name": "Iron Ingot", "ClassName": "Desc_IronIngot_C", "Amount": 0, "CurrentConsumed": 30.0, "MaxConsumed": 30.0, "ConsPercent": 100.0 }
+    ],
+    "InputInventory": [],
+    "OutputInventory": [],
+    "Productivity": 100.0,
+    "ManuSpeed": 100.0,
+    "Somersloops": 0,
+    "PowerShards": 0,
+    "IsConfigured": true,
+    "IsProducing": true,
+    "IsPaused": false,
+    "PowerInfo": { "CircuitGroupID": 3, "CircuitID": 3, "FuseTriggered": false, "PowerConsumed": 4.0, "MaxPowerConsumed": 4.0 },
+    "features": { "properties": { "name": "Constructor", "type": "Constructor" }, "geometry": { "coordinates": { "x": 1, "y": 2, "z": 3 }, "type": "Point" } }
+  },
+  {
+    "ID": "Build_AssemblerMk1_C_2147480002",
+    "Name": "Assembler",
+    "ClassName": "Build_AssemblerMk1_C",
+    "Recipe": "Unassigned",
+    "RecipeClassName": "Unassigned",
+    "production": [
+      { "Name": "Unassigned", "ClassName": "Unassigned", "Amount": 0, "CurrentProd": 0.0, "MaxProd": 0.0, "ProdPercent": 0.0 }
+    ],
+    "ingredients": [
+      { "Name": "Unassigned", "ClassName": "Unassigned", "Amount": 0, "CurrentConsumed": 0.0, "MaxConsumed": 0.0, "ConsPercent": 0.0 }
+    ],
+    "Productivity": 0.0,
+    "ManuSpeed": 100.0,
+    "Somersloops": 2,
+    "PowerShards": 1,
+    "IsConfigured": false,
+    "IsProducing": false,
+    "IsPaused": true,
+    "PowerInfo": { "CircuitGroupID": 3, "CircuitID": 3, "FuseTriggered": false, "PowerConsumed": 0.0, "MaxPowerConsumed": 15.0 }
+  }
+]
