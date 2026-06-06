@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ficsit-mcp.dev/schemas/fin-bridge/common.schema.json",
+  "title": "FIN Bridge Common Definitions",
+  "description": "Shared building blocks ($defs) referenced by the command, result, event, hello, and poll envelopes. Not a standalone message; only its $defs are consumed via $ref.",
+  "$defs": {
+    "protocolVersion": {
+      "title": "Protocol Version",
+      "description": "Integer wire-contract version, starting at 1. Present in hello and every poll exchange so the server can gate on it and refuse skew with PROTOCOL_VERSION_MISMATCH. Distinct from agentScriptVersion.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "agentId": {
+      "title": "Agent Id",
+      "description": "Stable identifier the agent chooses for the computer running it. Scopes the command queue, liveness, and event sequence server-side. Not a FIN component UUID.",
+      "type": "string",
+      "minLength": 1
+    },
+    "agentScriptVersion": {
+      "title": "Agent Script Version",
+      "description": "Semver of the in-world Lua agent script, reported by the agent. Advisory: lets the server log/display which script build is connected. Independent of protocolVersion.",
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+].+)?$"
+    },
+    "target": {
+      "title": "Command Target",
+      "description": "How a command names the component(s) it acts on. Exactly one addressing mode, mirroring FIN's findComponent query model.",
+      "type": "object",
+      "oneOf": [
+        {
+          "required": ["byNick"],
+          "properties": {
+            "byNick": {
+              "title": "By Nick",
+              "description": "Player-assigned nick/group string, resolved agent-side via component.findComponent. Not guaranteed unique; a single-target write against an ambiguous nick yields AMBIGUOUS_TARGET, never a silent first-match.",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "required": ["byId"],
+          "properties": {
+            "byId": {
+              "title": "By Id",
+              "description": "Stable FIN component UUID, resolved via component.proxy. Preferred once discovered, since UUIDs are unambiguous.",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "required": ["byClass"],
+          "properties": {
+            "byClass": {
+              "title": "By Class",
+              "description": "FIN class query (e.g. Build_SmelterMk1_C) for reads and broadcasts that intentionally fan out over a component type.",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "componentRef": {
+      "title": "Resolved Component Reference",
+      "description": "The resolved form a component takes in discovery results and event sources. Always carries the authoritative UUID; nick/class/displayName are advisory and may be absent.",
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "title": "Component UUID",
+          "description": "Authoritative FIN component UUID.",
+          "type": "string",
+          "minLength": 1
+        },
+        "nick": {
+          "title": "Nick",
+          "description": "Player-assigned nick, if any. Advisory and not unique.",
+          "type": "string"
+        },
+        "class": {
+          "title": "Class",
+          "description": "FIN component class name, if known.",
+          "type": "string"
+        },
+        "displayName": {
+          "title": "Display Name",
+          "description": "Human-friendly name from the game, if available.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "errorCode": {
+      "title": "Error Code",
+      "description": "Typed error code so callers can branch programmatically. New codes are a deliberate, versioned addition to this enum.",
+      "type": "string",
+      "enum": [
+        "AGENT_OFFLINE",
+        "QUEUE_FULL",
+        "QUEUED_NOT_PICKED_UP",
+        "DELIVERED_NO_RESULT",
+        "AMBIGUOUS_TARGET",
+        "TARGET_NOT_FOUND",
+        "PROTOCOL_VERSION_MISMATCH",
+        "UNAUTHORIZED",
+        "INVALID_ARGS",
+        "OPERATION_FAILED"
+      ]
+    },
+    "errorObject": {
+      "title": "Error Object",
+      "description": "Uniform error shape across result envelopes and HTTP error bodies.",
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/errorCode"
+        },
+        "message": {
+          "title": "Error Message",
+          "description": "Human-actionable text. For operator-facing failures it names the real-world remedy (e.g. 'Is the FIN computer powered and running the agent script?').",
+          "type": "string",
+          "minLength": 1
+        },
+        "details": {
+          "title": "Error Details",
+          "description": "Free-form structured context, e.g. the candidate list for AMBIGUOUS_TARGET or version bounds for PROTOCOL_VERSION_MISMATCH.",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

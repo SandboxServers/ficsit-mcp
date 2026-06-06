@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ficsit-mcp.dev/schemas/fin-bridge/result.schema.json",
+  "title": "FIN Bridge Result Envelope",
+  "description": "The agent's answer to one command, sent up inside a poll-request. Agent -> server. Correlated only by id (it rides a different HTTP request than the command delivery). A result whose id the server has already tombstoned is discarded, never re-applied.",
+  "type": "object",
+  "required": ["id", "ok"],
+  "properties": {
+    "id": {
+      "title": "Command Id",
+      "description": "Echoes the id of the command this result answers. The only correlation; HTTP request pairing cannot be used.",
+      "type": "string",
+      "minLength": 1
+    },
+    "ok": {
+      "title": "Success Flag",
+      "description": "True for success (payload present, error absent); false for failure (error present, payload absent).",
+      "type": "boolean"
+    },
+    "payload": {
+      "title": "Success Payload",
+      "description": "Operation-specific success data. Write operations include both before and after state so the effect of a mutation is visible to the model and operator. Shape per-operation is owned by #20.",
+      "type": "object"
+    },
+    "error": {
+      "$ref": "common.schema.json#/$defs/errorObject"
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": { "ok": { "const": true } },
+        "required": ["ok"]
+      },
+      "then": {
+        "required": ["payload"],
+        "not": { "required": ["error"] }
+      }
+    },
+    {
+      "if": {
+        "properties": { "ok": { "const": false } },
+        "required": ["ok"]
+      },
+      "then": {
+        "required": ["error"],
+        "not": { "required": ["payload"] }
+      }
+    }
+  ]
+}

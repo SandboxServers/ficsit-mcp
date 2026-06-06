@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ficsit-mcp.dev/schemas/fin-bridge/poll-request.schema.json",
+  "title": "FIN Bridge Poll Request",
+  "description": "The only body the agent POSTs to /fin/v1/poll. Agent -> server. Wraps the results of commands executed since the last poll and any buffered events, plus version, identity, and liveness fields. Its arrival refreshes the agent's liveness.",
+  "type": "object",
+  "required": ["protocolVersion", "agentId", "agentScriptVersion", "results", "events", "droppedEvents"],
+  "properties": {
+    "protocolVersion": {
+      "$ref": "common.schema.json#/$defs/protocolVersion"
+    },
+    "agentId": {
+      "$ref": "common.schema.json#/$defs/agentId"
+    },
+    "agentScriptVersion": {
+      "$ref": "common.schema.json#/$defs/agentScriptVersion"
+    },
+    "results": {
+      "title": "Results",
+      "description": "Result envelopes for commands executed since the last poll. Possibly empty.",
+      "type": "array",
+      "items": {
+        "$ref": "result.schema.json"
+      }
+    },
+    "events": {
+      "title": "Events",
+      "description": "Buffered event envelopes drained from the agent's bounded ring. Possibly empty.",
+      "type": "array",
+      "items": {
+        "$ref": "event.schema.json"
+      }
+    },
+    "droppedEvents": {
+      "title": "Dropped Events (running count)",
+      "description": "Running count of events the agent's drop-oldest ring has discarded since boot. Tells the server telemetry gaps exist even when the events array looks healthy.",
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false
+}

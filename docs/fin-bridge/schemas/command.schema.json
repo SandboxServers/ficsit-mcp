@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ficsit-mcp.dev/schemas/fin-bridge/command.schema.json",
+  "title": "FIN Bridge Command Envelope",
+  "description": "A single command the MCP server sends down to the agent inside a poll-response. Server -> agent. Correlated to its result by the opaque id. Commands are never auto-retried; the agent dedups on id (at-most-once execution).",
+  "type": "object",
+  "required": ["id", "target", "operation"],
+  "properties": {
+    "id": {
+      "title": "Command Id",
+      "description": "Server-generated unique opaque id (ULID/UUID). The sole correlation key between this command and its result. The agent keeps a recently-seen set keyed on this so a re-delivered command is acked but not re-executed.",
+      "type": "string",
+      "minLength": 1
+    },
+    "target": {
+      "$ref": "common.schema.json#/$defs/target"
+    },
+    "operation": {
+      "title": "Operation",
+      "description": "Name of the action to perform (e.g. discover, getState, setStandby, setPotential, setRecipe, execute). Kept an open string so adding a machine-control tool (#20) does not require a protocol version bump.",
+      "type": "string",
+      "minLength": 1
+    },
+    "args": {
+      "title": "Operation Arguments",
+      "description": "Operation-specific arguments. Open by design. The one cross-cutting arg fixed here is allowMultiple.",
+      "type": "object",
+      "properties": {
+        "allowMultiple": {
+          "title": "Allow Multiple Targets",
+          "description": "When true, a byNick/byClass target may intentionally fan out over all matches, suppressing AMBIGUOUS_TARGET. Reads/broadcasts set this; single-target writes must not. Defaults to false when absent.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "issuedAt": {
+      "title": "Issued At",
+      "description": "RFC 3339 timestamp the server stamps when the command is enqueued. Telemetry/debugging only.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "deadlineMs": {
+      "title": "Deadline (ms)",
+      "description": "Relative deadline in milliseconds from delivery, after which the server stops waiting for this command's result and tombstones the id. This is the server's patience, distinct from the agent's own execution timeout.",
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false
+}
