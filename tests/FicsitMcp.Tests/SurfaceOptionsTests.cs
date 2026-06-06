@@ -57,6 +57,43 @@ public sealed class SurfaceOptionsTests
     }
 
     [Fact]
+    public void Binding_PopulatesCertPinFilePath_WhenSet()
+    {
+        // Arrange: the optional pin-path override (e.g. a container's mounted writable volume).
+        var appsettings = new Dictionary<string, string?>
+        {
+            ["DedicatedServer:BaseUrl"] = "https://127.0.0.1:7777",
+            ["DedicatedServer:AdminToken"] = "token",
+            ["DedicatedServer:CertPinFilePath"] = "/data/ficsit-mcp/cert-pins.json",
+        };
+        using ServiceProvider provider = BuildProvider(appsettings);
+
+        // Act
+        DedicatedServerOptions options = provider.GetRequiredService<IOptions<DedicatedServerOptions>>().Value;
+
+        // Assert
+        Assert.Equal("/data/ficsit-mcp/cert-pins.json", options.CertPinFilePath);
+    }
+
+    [Fact]
+    public void CertPinFilePath_DefaultsToNull_WhenUnset()
+    {
+        // Arrange: unset means "use FileCertificatePinStore.DefaultPinFilePath" at registration.
+        var appsettings = new Dictionary<string, string?>
+        {
+            ["DedicatedServer:BaseUrl"] = "https://127.0.0.1:7777",
+            ["DedicatedServer:AdminToken"] = "token",
+        };
+        using ServiceProvider provider = BuildProvider(appsettings);
+
+        // Act
+        DedicatedServerOptions options = provider.GetRequiredService<IOptions<DedicatedServerOptions>>().Value;
+
+        // Assert
+        Assert.Null(options.CertPinFilePath);
+    }
+
+    [Fact]
     public void Binding_ParsesFrmTransportMode_FromString()
     {
         // Arrange

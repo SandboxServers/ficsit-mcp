@@ -20,6 +20,21 @@
          in by the Hosting metapackage, so it is referenced directly by the host. Kept on
          the same 10.0.x line as Hosting to avoid a version-skew downgrade warning. -->
     <PackageVersion Include="Microsoft.Extensions.Options.DataAnnotations" Version="10.0.8" />
+
+    <!-- HTTP resilience (timeout/retry/circuit-breaker on IHttpClientFactory clients),
+         built on Polly. This is the SUPPORTED package; Microsoft.Extensions.Http.Polly is
+         deprecated — do not reintroduce it. It also transitively brings Microsoft.Extensions.Http
+         (IHttpClientFactory + AddHttpClient), so the host does not reference that separately.
+         Versioned on its own 10.x line (independent of the Hosting 10.0.x line); pulls
+         Microsoft.Extensions.* dependencies at >= the Hosting line, so no downgrade warning. -->
+    <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="10.6.0" />
+
+    <!-- Logging abstractions only (ILogger/ILogger<T>), referenced by the Domain project so the
+         TOFU certificate validator can log first-contact pinning without taking a dependency on a
+         concrete logging provider — the host owns provider/sink wiring. The metapackage-free
+         Abstractions package keeps the Domain project light and provider-agnostic. Kept on the
+         10.0.x line to match Hosting and avoid a downgrade warning. -->
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.8" />
   </ItemGroup>
 
   <!-- Test-only dependencies. -->
@@ -28,6 +43,11 @@
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.6.0" />
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+
+    <!-- FakeTimeProvider: virtualizes TimeProvider so the resilience pipeline's total-budget
+         timeout can be exercised by advancing fake time at ~zero wall-clock. Kept on the same
+         10.x line as Microsoft.Extensions.Http.Resilience so the shared abstractions agree. -->
+    <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.6.0" />
   </ItemGroup>
 
 </Project>

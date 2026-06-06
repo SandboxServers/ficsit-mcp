@@ -12,6 +12,9 @@
     <PackageReference Include="ModelContextProtocol" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" />
+    <!-- IHttpClientFactory + Polly-based resilience for the per-surface clients. Transitively
+         provides Microsoft.Extensions.Http (AddHttpClient), so it is not referenced separately. -->
+    <PackageReference Include="Microsoft.Extensions.Http.Resilience" />
   </ItemGroup>
 
   <!--

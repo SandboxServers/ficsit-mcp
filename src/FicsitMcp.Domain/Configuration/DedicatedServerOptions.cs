@@ -49,6 +49,14 @@ public sealed class DedicatedServerOptions : IConfigurableSurface, IValidatableO
     /// </summary>
     public bool DangerousAcceptAnyCert { get; set; }
 
+    /// <summary>
+    /// Optional override for where the trust-on-first-use certificate pin file lives. When unset,
+    /// the default is <c>%LocalAppData%/ficsit-mcp/cert-pins.json</c>. Containers and read-only
+    /// deployments should point this at a mounted, writable path so pins survive restarts; the
+    /// per-user default may not be writable (or persistent) in those environments.
+    /// </summary>
+    public string? CertPinFilePath { get; set; }
+
     /// <inheritdoc />
     public bool IsConfigured => !string.IsNullOrWhiteSpace(BaseUrl);
 

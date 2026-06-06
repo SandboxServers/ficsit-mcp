@@ -16,6 +16,8 @@ src/
     appsettings.json         #   non-secret defaults; copied to output (PreserveNewest)
     Configuration/
       SurfaceOptionsRegistration.cs  # binds+validates the three surfaces (ValidateOnStart)
+    Http/                    #   IHttpClientFactory wiring (host owns DI + resilience packages)
+      SurfaceHttpClientRegistration.cs # named clients + TOFU handler + ONE resilience pipeline
     Tools/                   #   thin [McpServerToolType] tools that delegate to Domain
       ServerInfoTool.cs      #   placeholder `server_info` tool
       GameDataTool.cs        #   `lookup_recipe` / `lookup_item` (delegate to IGameDataService)
@@ -30,6 +32,12 @@ src/
       SurfaceConfigurationExtensions.cs  # .Require() -> actionable error if dormant
       SurfaceNotConfiguredException.cs
       Secret.cs Secret*Converter.cs      # redacting credential wrapper (never logs raw)
+    Http/                    # surface HTTP plumbing (BCL/Polly only; NO MCP) — testable core
+      SurfaceHttpClients.cs           # canonical named-client constants (DedicatedServer/Frm)
+      SurfaceHttpClient.cs            # SHELL: send + map transport faults to friendly errors
+      TofuCertificateValidator.cs     # trust-on-first-use self-signed cert pinning
+      ICertificatePinStore.cs FileCertificatePinStore.cs  # %LocalAppData% thumbprint store
+      SurfaceUnreachableException.cs CertificatePinMismatchException.cs  # actionable errors
     GameData/                #   canonical game-data layer (Docs.json -> immutable model)
       Model/                 #     immutable records: GameItem/GameRecipe/GameBuilding/...
       DocsJsonParser.cs      #     UTF-16 Docs.json -> GameDataSnapshot (rate math here)
@@ -42,6 +50,7 @@ tests/
   FicsitMcp.Tests/           # xUnit; references both projects
     Fixtures/                #   docs-slice.utf16.json — real UTF-16 Docs.json slice
     GameData/                #   parser/golden-rate/name-resolution/loader/tool tests
+    Http/                    #   fake HttpMessageHandler; TOFU/pin-store/resilience/error-mapping
 ```
 
 Target framework is **`net10.0`** (current LTS). Shared settings in `Directory.Build.props`:
@@ -84,7 +93,10 @@ prefix is stripped and `__` is the section delimiter, so `FICSITMCP_Frm__BaseUrl
 **Options keys** (env var = `FICSITMCP_<Section>__<Key>`):
 
 - `DedicatedServer`: `BaseUrl` (e.g. `https://127.0.0.1:7777`), `AdminToken` (secret, bearer
-  auth), `DangerousAcceptAnyCert` (bool, **dev only** — skips TLS thumbprint pinning).
+  auth), `DangerousAcceptAnyCert` (bool, **dev only** — skips TLS thumbprint pinning),
+  `CertPinFilePath` (optional, **default** `%LocalAppData%/ficsit-mcp/cert-pins.json` — override the
+  TOFU pin file location; containers/read-only deployments should point this at a mounted writable
+  path so pins survive restarts).
 - `Frm`: `BaseUrl` (e.g. `http://127.0.0.1:8080`), `TransportMode` (`Direct` default, or
   `DedicatedApiPassthrough` to route through the dedicated-server API instead of the FRM port).
 - `FinBridge`: `ListenUrl` (e.g. `http://0.0.0.0:8421`), `SharedSecret` (secret the in-world
@@ -125,6 +137,61 @@ secrets in `appsettings.json`; pass them through env vars.
 ```
 
 Include only the surfaces you use; omit a surface's env vars to leave it dormant.
+
+## HTTP plumbing (outbound surface calls)
+
+All outbound HTTP goes through `IHttpClientFactory` — **never `new HttpClient()`**. The host
+registers one named client per surface in `SurfaceHttpClientRegistration.AddSurfaceHttpClients()`
+(`src/FicsitMcp/Http`), keyed by the constants in `Domain/Http/SurfaceHttpClients.cs`
+(`DedicatedServer`, `Frm`). Each client's `BaseAddress` is read from its surface options **at
+resolution time** via `options.Require()`, so resolving a client for an unconfigured surface fails
+fast naming the exact env var rather than nulling out deep in a send.
+
+**Surface clients build on the shell, not on `HttpClient` directly.** `Domain/Http/SurfaceHttpClient`
+is the typed shell the surface engineers (`ficsit-server-api-client`, `frm-observe-surface`) layer
+their request/response semantics onto. It threads `CancellationToken` and maps transport faults to
+actionable errors: connection-refused / DNS / timeout → `SurfaceUnreachableException`
+("<Surface> unreachable at https://host:port — is it running?"); a genuine caller cancellation
+propagates as `OperationCanceledException` (never disguised as unreachable); a TOFU
+`CertificatePinMismatchException` is unwrapped from its `HttpRequestException` and surfaced as-is.
+
+**Resilience (one handler per client).** Per MS guidance we add exactly **one** resilience handler.
+Because we need fine-grained control over which calls retry, we use the custom-pipeline
+`AddResilienceHandler` (not `AddStandardResilienceHandler`) from `Microsoft.Extensions.Http.Resilience`
+(the supported package — `Microsoft.Extensions.Http.Polly` is deprecated, do not reintroduce it).
+The pipeline, outermost→innermost: **total timeout 10s** → **retry** (max 3, exponential backoff +
+jitter) → **attempt timeout 3s**. No circuit breaker: the targets are single LAN hosts, where a
+breaker would block legitimate retries after a brief blip without the multi-replica benefit it's
+designed for. The pipeline reads time through the DI-registered `TimeProvider` (real in production,
+`FakeTimeProvider` in the budget test) so timeouts/backoff are testable at ~zero wall-clock.
+
+**Retry altitude — per-request opt-in (important).** The retry strategy's `ShouldHandle` retries a
+**transient** fault only when **either** the HTTP method is safe (GET/HEAD/OPTIONS/TRACE) **or** the
+request carries an explicit opt-in. The dedicated-server API is **POST-only** (one endpoint, a
+function envelope), so idempotency is per-**function**, not per-method — a method-only gate (the old
+`DisableForUnsafeHttpMethods`) would mean *nothing* on that surface ever retries. Surface clients
+opt an idempotent POST into retries by setting `SurfaceHttpRequestOptions.AllowRetry` (key
+`"FicsitMcp.AllowRetry"`, in `Domain/Http`) on the request:
+`request.Options.Set(SurfaceHttpRequestOptions.AllowRetry, true)`. The dedicated-server client (#5)
+sets it on idempotent functions (`QueryServerState`/`HealthCheck`/`VerifyAuthenticationToken`) and
+**never** on `SaveGame`/`Shutdown`/`RunCommand` — a replayed shutdown/command is a real outage.
+
+**Self-signed TLS — trust-on-first-use (TOFU).** The dedicated server ships a self-signed cert, so
+its primary handler (`SocketsHttpHandler`) uses `TofuCertificateValidator` instead of chain
+validation: on first contact the cert's **SHA-256** hash (`GetCertHashString(SHA256)` — not the
+collision-prone SHA-1 `Thumbprint`) is pinned; later contacts must match or the connection is
+refused with `CertificatePinMismatchException` (names the pin file so a deliberate rotation can be
+re-pinned). **Pins are keyed by authority (`host:port`)**, not host alone, so two services on the
+same host at different ports can't be confused. First-contact pinning is **atomic** via
+`ICertificatePinStore.GetOrPin` (returns the effective pin — existing if present, else the offered
+one — under the store's write lock), so a first-contact race becomes a deterministic mismatch rather
+than two writers clobbering each other. Pins persist in `%LocalAppData%/ficsit-mcp/cert-pins.json`
+(`FileCertificatePinStore.DefaultPinFilePath`, overridable via `DedicatedServer:CertPinFilePath`) —
+chosen over the content root because a published host may sit in a read-only dir, and a pin is
+per-user local state, not committed config. A corrupt pin file is treated as "no pins" (re-pin on
+next contact), never a startup crash. The dev escape hatch `DangerousAcceptAnyCert=true` (on
+`DedicatedServerOptions`) accepts any cert **without** pinning; its alarming name is intentional —
+never use it against a server you don't fully control.
 
 ## What this is
 
