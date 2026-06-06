@@ -18,6 +18,11 @@ src/
       SurfaceOptionsRegistration.cs  # binds+validates the three surfaces (ValidateOnStart)
     Http/                    #   IHttpClientFactory wiring (host owns DI + resilience packages)
       SurfaceHttpClientRegistration.cs # named clients + TOFU handler + ONE resilience pipeline
+    FinBridge/               #   FIN bridge HTTP listener (Kestrel) — transport only, separate from MCP
+      FinBridgeRegistration.cs   # AddFinBridge(): wires IFinBridge + listener ONLY when configured
+      FinBridgeHostedService.cs  # IHostedService: own Kestrel WebApplication on ListenUrl
+      FinBridgeEndpoints.cs      # maps POST /fin/v1/hello + /fin/v1/poll; status mapping
+      FinTokenAuthMiddleware.cs  # constant-time X-FIN-Token check; 401 before any work
     Tools/                   #   thin [McpServerToolType] tools that delegate to Domain
       ServerInfoTool.cs      #   placeholder `server_info` tool
       GameDataTool.cs        #   `lookup_recipe` / `lookup_item` (delegate to IGameDataService)
@@ -38,6 +43,15 @@ src/
       TofuCertificateValidator.cs     # trust-on-first-use self-signed cert pinning
       ICertificatePinStore.cs FileCertificatePinStore.cs  # %LocalAppData% thumbprint store
       SurfaceUnreachableException.cs CertificatePinMismatchException.cs  # actionable errors
+    FinBridge/               #   FIN bridge core (long-poll command channel); NO MCP, NO ASP.NET
+      IFinBridge.cs          #     tool-facing (SendAsync/GetLiveness/Subscribe) + transport-facing (Hello/Poll)
+      FinBridge.cs           #     impl: per-agent reject-on-full queue, TCS registry, tombstones, event ring
+      FinProtocol.cs         #     fixed wire constants: version, X-FIN-Token, /fin/v1 paths
+      FinCommand/FinResult/FinEvent/FinTarget/ComponentRef/FinError.cs  # envelope DTOs (match schemas)
+      HelloRequest/HelloResponse/PollRequest/PollResponse.cs            # handshake + poll wrappers
+      FinErrorCode.cs        #     typed error enum (matches common.schema.json enum)
+      AgentLiveness.cs       #     liveness snapshot record
+      FinBridgeException.cs ProtocolVersionMismatchException.cs  # surfaced failures (carry FinError / 426 info)
     GameData/                #   canonical game-data layer (Docs.json -> immutable model)
       Model/                 #     immutable records: GameItem/GameRecipe/GameBuilding/...
       DocsJsonParser.cs      #     UTF-16 Docs.json -> GameDataSnapshot (rate math here)
@@ -51,6 +65,7 @@ tests/
     Fixtures/                #   docs-slice.utf16.json — real UTF-16 Docs.json slice
     GameData/                #   parser/golden-rate/name-resolution/loader/tool tests
     Http/                    #   fake HttpMessageHandler; TOFU/pin-store/resilience/error-mapping
+    FinBridge/               #   FakeTimeProvider unit tests + real-Kestrel integration (fake HttpClient agent)
 ```
 
 Target framework is **`net10.0`** (current LTS). Shared settings in `Directory.Build.props`:
@@ -192,6 +207,54 @@ per-user local state, not committed config. A corrupt pin file is treated as "no
 next contact), never a startup crash. The dev escape hatch `DangerousAcceptAnyCert=true` (on
 `DedicatedServerOptions`) accepts any cert **without** pinning; its alarming name is intentional —
 never use it against a server you don't fully control.
+
+## FIN bridge (inbound listener for the in-world Lua agent)
+
+Unlike the three outbound surfaces above, the FIN bridge is an **inbound HTTP listener**. FicsIt-Networks
+computers cannot accept connections (the InternetCard is outbound-only), so the in-world Lua agent
+**long-polls out** to us: commands flow *down* inside long-poll responses, results and events *up*
+via the next POST. The wire contract is **ADR-001** and the JSON Schemas under `docs/fin-bridge/`;
+those documents are the source of truth — schemas change first, code follows.
+
+**Hosted separately from MCP.** The listener is its own Kestrel `WebApplication` mounted as an
+`IHostedService` (`FinBridgeHostedService`), completely separate from the MCP stdio transport. It
+shares the host's logger factory so its logs stay on **stderr** (never the JSON-RPC stdout stream).
+The bridge is **independently optional**: with `FinBridge:ListenUrl` unset, `AddFinBridge` registers
+nothing — no `IFinBridge`, no listener — and the rest of the server is untouched. The host pulls in
+the shared ASP.NET Core framework (`<FrameworkReference Microsoft.AspNetCore.App>`); adding it means
+`Microsoft.Extensions.Hosting` and `Microsoft.Extensions.Options.DataAnnotations` are now framework-
+provided and were removed as explicit `PackageReference`s (NU1510, warnings-as-errors).
+
+**Endpoints** (both require the `X-FIN-Token` header; auth runs before any work):
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/fin/v1/hello` | Boot handshake: agent announces id + versions; server returns the timing contract or 426 on protocol skew. |
+| `POST` | `/fin/v1/poll` | Long-poll: ingests results+events from the body, holds up to `ServerHoldMs` for queued commands, returns them. |
+
+**`IFinBridge`** (in `FicsitMcp.Domain/FinBridge`, no HTTP/MCP deps) is the seam. Tool-facing:
+`SendAsync` (enqueue + await result with timeout), `GetLiveness`, `RecentEvents`, `Subscribe`.
+Transport-facing (driven by the endpoints): `HelloAsync`, `PollAsync`.
+
+**At-most-once, dogmatically.** Commands are **never** auto-retried — a replayed flip-switch is a
+real-world double-toggle. Command ids are the sole correlation key; on deadline the waiter is
+completed as a timeout and the id is **tombstoned** so a late result is recognised and discarded,
+never re-applied. The two timeout outcomes carry different safety meaning:
+`QUEUED_NOT_PICKED_UP` (agent never pulled it; almost certainly did not execute) vs
+`DELIVERED_NO_RESULT` (delivered, no result; **may** have executed — do not blindly reissue).
+
+**Liveness fast-fail.** A command against an agent that has not said hello/polled within
+`AgentLivenessMs` fails immediately with `AGENT_OFFLINE` and an operator remedy ("Is the FIN
+computer powered and running the agent script?"), rather than hanging to the deadline.
+
+**Back-pressure asymmetry.** The per-agent command queue **rejects** on full (`QUEUE_FULL`) — never
+drop a mutation. The event ring **drops oldest** on overflow — telemetry loss is acceptable — and
+events fan out to subscribers via per-subscriber drop-oldest channels (issue #21 consumes this).
+
+**Config knobs** (`FinBridge` section, env `FICSITMCP_FinBridge__<Key>`): `ListenUrl`,
+`SharedSecret` (secret), and tunable `ServerHoldMs` (25000), `AgentLivenessMs` (40000, must exceed
+`ServerHoldMs`), `MaxQueuedCommands` (64), `MaxBufferedEvents` (256), `DefaultCommandDeadlineMs`
+(8000). Defaults track ADR-001.
 
 ## What this is
 
