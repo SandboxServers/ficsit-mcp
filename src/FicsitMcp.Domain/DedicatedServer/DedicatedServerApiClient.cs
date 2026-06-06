@@ -409,15 +409,17 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient
             request, DedicatedServerJsonContext.Default.DownloadSaveGameRequest);
 
         // The download returns a DIRECT binary body (not a JSON envelope) on success, but a JSON
-        // error envelope on failure. Read headers first so we can branch before buffering the body,
-        // and stream success bytes to the destination in chunks (never the whole save in memory).
+        // error envelope on failure. We branch on Content-Type, then stream the success body to the
+        // destination in chunks via ReadAsStreamAsync -> CopyToAsync, so we never materialize a second
+        // in-memory copy of the save. (A true header-only completion would require a streaming overload
+        // on the infra SurfaceHttpClient shell, which is dotnet-infra-engineer's to add; today the shell
+        // sends with the default completion, so very large saves are bounded by HttpClient's buffering.)
         using HttpResponseMessage response = await SendWithReauthAsync(
             ApiFunctions.DownloadSaveGame,
             () => BuildEnvelopeRequest(ApiFunctions.DownloadSaveGame, dataElement, allowRetry: false),
             authenticated: true,
             idempotent: false,
             allowReauth: true,
-            completionOption: HttpCompletionOption.ResponseHeadersRead,
             cancellationToken).ConfigureAwait(false);
 
         if (IsJsonResponse(response))
@@ -459,7 +461,6 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient
             authenticated: true,
             idempotent: allowRetry,
             allowReauth: true,
-            completionOption: HttpCompletionOption.ResponseContentRead,
             cancellationToken).ConfigureAwait(false);
 
         byte[] body = await ReadBodyBytesAsync(response, cancellationToken).ConfigureAwait(false);
@@ -503,7 +504,6 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient
             authenticated,
             idempotent,
             allowReauth: true,
-            HttpCompletionOption.ResponseContentRead,
             cancellationToken).ConfigureAwait(false);
 
         byte[] body = await ReadBodyBytesAsync(response, cancellationToken).ConfigureAwait(false);
@@ -538,7 +538,6 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient
             authenticated,
             idempotent,
             allowReauth: true,
-            HttpCompletionOption.ResponseContentRead,
             cancellationToken).ConfigureAwait(false);
 
         byte[] body = await ReadBodyBytesAsync(response, cancellationToken).ConfigureAwait(false);
@@ -582,7 +581,6 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient
             authenticated,
             idempotent,
             allowReauth,
-            HttpCompletionOption.ResponseContentRead,
             cancellationToken).ConfigureAwait(false);
 
         byte[] body = await ReadBodyBytesAsync(response, cancellationToken).ConfigureAwait(false);
@@ -600,7 +598,6 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient
         bool authenticated,
         bool idempotent,
         bool allowReauth,
-        HttpCompletionOption completionOption,
         CancellationToken cancellationToken)
     {
         HttpRequestMessage first = requestFactory();
