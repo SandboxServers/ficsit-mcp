@@ -1,0 +1,28 @@
+[
+  {
+    "Name": "Drone",
+    "ClassName": "BP_DroneTransport_C",
+    "location": { "x": 300000.0, "y": 50000.0, "z": 25000.0, "rotation": 120.0 },
+    "HomeStation": "North Port",
+    "PairedStation": "South Port",
+    "HasPairedStation": true,
+    "CurrentDestination": "South Port",
+    "FlyingSpeed": 90.0,
+    "MaxSpeed": 110.0,
+    "CurrentFlyingMode": "Flying",
+    "features": { "properties": { "name": "Drone", "type": "Drone" }, "geometry": { "type": "Point" } }
+  },
+  {
+    "Name": "Idle Drone",
+    "ClassName": "BP_DroneTransport_C",
+    "location": { "x": 305000.0, "y": 52000.0, "z": 0.0, "rotation": 0.0 },
+    "HomeStation": "East Port",
+    "PairedStation": "",
+    "HasPairedStation": false,
+    "CurrentDestination": "",
+    "FlyingSpeed": 0.0,
+    "MaxSpeed": 110.0,
+    "CurrentFlyingMode": "Docked",
+    "ExtraUnknownField": "ignored"
+  }
+]

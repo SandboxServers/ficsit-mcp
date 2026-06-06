@@ -45,6 +45,11 @@ builder.Services.AddSingleton<IServerInfoProvider, ServerInfoProvider>();
 // surface fails fast naming the env var. Surface clients NEVER new up HttpClient.
 builder.Services.AddSurfaceHttpClients();
 
+// FRM observe surface: the typed client over the FRM mod web server (live world state). Resolved
+// lazily over the named FRM HttpClient, so an unconfigured FRM surface fails only when an FRM tool
+// is invoked — HTTPS-API-only operation is unaffected.
+builder.Services.AddFrmClient();
+
 // Game-data layer: bind the optional Docs.json override, load the snapshot ONCE at
 // startup (shipped embedded asset, or the override file if configured), and expose it as
 // an immutable singleton. The snapshot is loaded eagerly here so a misconfigured override
