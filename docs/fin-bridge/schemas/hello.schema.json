@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ficsit-mcp.dev/schemas/fin-bridge/hello.schema.json",
+  "title": "FIN Bridge Hello",
+  "description": "The boot handshake on POST /fin/v1/hello. The agent announces identity and versions; the server accepts (and returns the timing contract) or refuses on protocol skew with PROTOCOL_VERSION_MISMATCH (HTTP 426).",
+  "type": "object",
+  "oneOf": [
+    {
+      "title": "Hello Request",
+      "description": "Agent -> server boot announcement.",
+      "type": "object",
+      "required": ["protocolVersion", "agentId", "agentScriptVersion"],
+      "properties": {
+        "protocolVersion": {
+          "$ref": "common.schema.json#/$defs/protocolVersion"
+        },
+        "agentId": {
+          "$ref": "common.schema.json#/$defs/agentId"
+        },
+        "agentScriptVersion": {
+          "$ref": "common.schema.json#/$defs/agentScriptVersion"
+        },
+        "capabilities": {
+          "title": "Capabilities",
+          "description": "Optional list of capability tags the agent supports (e.g. discover, read, write, events). Advisory in protocol v1; reserved for capability negotiation at v2.",
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "title": "Hello Response",
+      "description": "Server -> agent acceptance, carrying the timing contract so the agent need not hard-code it.",
+      "type": "object",
+      "required": ["protocolVersion", "sessionAccepted"],
+      "properties": {
+        "protocolVersion": {
+          "$ref": "common.schema.json#/$defs/protocolVersion"
+        },
+        "sessionAccepted": {
+          "title": "Session Accepted",
+          "description": "True when the server registered the agent and marked it alive.",
+          "type": "boolean"
+        },
+        "serverHoldMs": {
+          "title": "Server Hold (ms)",
+          "description": "How long the server will hold a long-poll open before returning (default 25000). Must be shorter than the agent's InternetCard request timeout.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "agentLivenessMs": {
+          "title": "Agent Liveness Window (ms)",
+          "description": "Window within which a hello/poll must arrive for the agent to count as alive (default 40000). Commands enqueued against a non-alive agent fail fast with AGENT_OFFLINE.",
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  ]
+}
