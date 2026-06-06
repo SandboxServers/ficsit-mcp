@@ -15,6 +15,14 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <!-- Captured fixtures (a real UTF-16 Docs.json slice, etc.) copied next to the test
+       assembly so the loader/parser run against real on-disk data, not in-memory strings. -->
+  <ItemGroup>
+    <None Include="Fixtures\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\src\FicsitMcp\FicsitMcp.csproj" />
     <ProjectReference Include="..\..\src\FicsitMcp.Domain\FicsitMcp.Domain.csproj" />
