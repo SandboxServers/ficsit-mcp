@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ficsit-mcp.dev/schemas/fin-bridge/poll-response.schema.json",
+  "title": "FIN Bridge Poll Response",
+  "description": "The body the server returns from a held /fin/v1/poll. Server -> agent. Carries the commands to execute and the server's protocol version (so skew is detectable even on a 200). commands may be empty when the hold expired with nothing queued.",
+  "type": "object",
+  "required": ["protocolVersion", "commands"],
+  "properties": {
+    "protocolVersion": {
+      "$ref": "common.schema.json#/$defs/protocolVersion"
+    },
+    "commands": {
+      "title": "Commands",
+      "description": "Command envelopes for the agent to execute. Possibly empty. Each command's id is unique; the agent dedups on it for at-most-once execution.",
+      "type": "array",
+      "items": {
+        "$ref": "command.schema.json"
+      }
+    }
+  },
+  "additionalProperties": false
+}

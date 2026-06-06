@@ -12,12 +12,13 @@ Directory.Packages.props     # central package management — all versions live 
 .editorconfig                # style/analyzer rules; every severity override has a why-comment
 src/
   FicsitMcp/                 # console host (Exe). Program.cs = host/transport wiring only
-    Program.cs               #   stderr logging + config + AddMcpServer().WithStdioServerTransport()
+    Program.cs               #   stderr logging + config + DI + AddMcpServer().WithStdioServerTransport()
     appsettings.json         #   non-secret defaults; copied to output (PreserveNewest)
     Configuration/
       SurfaceOptionsRegistration.cs  # binds+validates the three surfaces (ValidateOnStart)
     Tools/                   #   thin [McpServerToolType] tools that delegate to Domain
       ServerInfoTool.cs      #   placeholder `server_info` tool
+      GameDataTool.cs        #   `lookup_recipe` / `lookup_item` (delegate to IGameDataService)
   FicsitMcp.Domain/          # Satisfactory domain + surface clients; NO MCP references
     ServerInfo.cs            #   record returned by server_info
     IServerInfoProvider.cs   #   service contract (tools depend on this, not reflection)
@@ -29,8 +30,18 @@ src/
       SurfaceConfigurationExtensions.cs  # .Require() -> actionable error if dormant
       SurfaceNotConfiguredException.cs
       Secret.cs Secret*Converter.cs      # redacting credential wrapper (never logs raw)
+    GameData/                #   canonical game-data layer (Docs.json -> immutable model)
+      Model/                 #     immutable records: GameItem/GameRecipe/GameBuilding/...
+      DocsJsonParser.cs      #     UTF-16 Docs.json -> GameDataSnapshot (rate math here)
+      GameDataService.cs     #     IGameDataService impl; O(1) class/display-name indexes
+      GameDataSnapshotLoader.cs #  override-vs-embedded resolution; SnapshotVersion const
+      SnapshotGenerator.cs   #     repeatable snapshot-refresh procedure (see README.md)
+      game-data.v1.json      #     embedded UTF-8 snapshot (build 23300430); ~277 KB
+      README.md              #     encoding gotchas, config override, refresh workflow
 tests/
   FicsitMcp.Tests/           # xUnit; references both projects
+    Fixtures/                #   docs-slice.utf16.json — real UTF-16 Docs.json slice
+    GameData/                #   parser/golden-rate/name-resolution/loader/tool tests
 ```
 
 Target framework is **`net10.0`** (current LTS). Shared settings in `Directory.Build.props`:
