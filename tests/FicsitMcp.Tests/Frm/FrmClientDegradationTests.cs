@@ -69,6 +69,27 @@ public sealed class FrmClientDegradationTests
     }
 
     [Fact]
+    public async Task GetPower_ServerError_ThrowsFrmPresentButErroringError()
+    {
+        // 5xx is distinct from "mod absent": something IS answering on the port but failed server-side
+        // (an FRM game-thread error, a transient overload). The remedy must say "present but erroring /
+        // retry", not send the model chasing "is the mod installed?".
+        FrmClient client = FrmFixtures.ClientReturning(
+            string.Empty,
+            HttpStatusCode.ServiceUnavailable,
+            contentType: "text/plain");
+
+        FrmUnreachableException ex = await Assert.ThrowsAsync<FrmUnreachableException>(
+            () => client.GetPowerAsync(CancellationToken.None));
+
+        Assert.Contains("HTTP 503", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("present but", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("retry", ex.Message, StringComparison.Ordinal);
+        // A server error is NOT a 404, so it must not carry the version-mismatch wording.
+        Assert.DoesNotContain("mod-version mismatch", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GetPower_NotFoundOnKnownEndpoint_ThrowsActionableFrmError()
     {
         // A 404 on a route we know exists means the wrong server is on the port or a version mismatch.

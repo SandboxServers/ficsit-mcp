@@ -31,5 +31,3 @@ FRM JSON casing is INCONSISTENT and must be matched per-field with explicit `[Js
 ## location shape (getActorJSON)
 `{ "x": <cm double>, "y": <cm double>, "z": <cm double>, "rotation": <0<=deg<360, 0=due north> }`
 Coordinates are world centimetres as doubles (raw uses `long double`); rotation is normalized to 0..360 with 0 = due north (FRM already does the +450 fmod 360 conversion). Normalize to compact form in our DTO: round coords to whole cm (int-ish), rotation to 1 decimal.
-</content>
-</invoke>

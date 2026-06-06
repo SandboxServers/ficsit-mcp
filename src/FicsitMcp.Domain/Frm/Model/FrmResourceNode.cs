@@ -14,7 +14,7 @@ namespace FicsitMcp.Domain.Frm.Model;
 /// <param name="ResourceForm">Physical form string (Solid/Liquid/Gas).</param>
 /// <param name="NodeType">FRM node-type string (node / fracking core / geyser / …).</param>
 /// <param name="Exploited">True when an extractor is already placed on this node.</param>
-/// <param name="Location">Compact world position.</param>
+/// <param name="Location">Compact world position, or <c>null</c> when FRM reported no location.</param>
 public sealed record FrmResourceNode(
     string Name,
     string ClassName,
@@ -22,4 +22,4 @@ public sealed record FrmResourceNode(
     string ResourceForm,
     string NodeType,
     bool Exploited,
-    FrmLocation Location);
+    FrmLocation? Location);

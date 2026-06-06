@@ -18,6 +18,16 @@ namespace FicsitMcp.Domain.Frm;
 /// save) and its consumers must filter and paginate.
 /// </para>
 /// <para>
+/// <b>Latency &amp; timeouts.</b> There is intentionally no per-endpoint timeout knob: the single
+/// timeout that governs every call here is the one the host configured on the FRM
+/// <c>SurfaceHttpClient</c>'s resilience pipeline. Most endpoints are cheap in-memory reads and
+/// return in well under a second; two are heavier and worth budgeting that shared timeout against —
+/// <see cref="GetFactoryAsync"/> (payload size scales with building count) and
+/// <see cref="GetResourceNodesAsync"/> (served on the game thread, so it competes with the simulation
+/// tick and can stall under load). If those need a longer ceiling than the cheap reads, widen the
+/// surface-level timeout rather than expecting a per-call override.
+/// </para>
+/// <para>
 /// Every method throws <see cref="FrmUnreachableException"/> with an actionable in-game remedy when
 /// the mod is absent or its web server is not started, and <c>SurfaceNotConfiguredException</c> when
 /// the FRM surface has no base URL configured. Neither failure affects other (HTTPS-API) surfaces.
@@ -66,6 +76,9 @@ public interface IFrmClient
 
     /// <summary>
     /// All resource nodes: resource, purity, and whether already exploited (<c>/getResourceNode</c>).
+    /// GAME-THREAD cost: FRM serves this on the game thread (<c>RequiresGameThread</c>), so it competes
+    /// with the simulation tick and is heavier than the pure-data reads — call it sparingly (node
+    /// layout is effectively static within a session) and budget it against the surface timeout.
     /// </summary>
     Task<ImmutableArray<FrmResourceNode>> GetResourceNodesAsync(CancellationToken cancellationToken);
 }

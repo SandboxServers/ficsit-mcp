@@ -6,7 +6,7 @@ namespace FicsitMcp.Domain.Frm.Model;
 /// </summary>
 /// <param name="Name">Train name.</param>
 /// <param name="ClassName">Native train class.</param>
-/// <param name="Location">Compact world position.</param>
+/// <param name="Location">Compact world position, or <c>null</c> when FRM reported no location.</param>
 /// <param name="SpeedKmh">Current forward speed in km/h (FRM already converts from cm/s).</param>
 /// <param name="ThrottlePercent">Throttle input, percentage.</param>
 /// <param name="Station">
@@ -23,7 +23,7 @@ namespace FicsitMcp.Domain.Frm.Model;
 public sealed record FrmTrain(
     string Name,
     string ClassName,
-    FrmLocation Location,
+    FrmLocation? Location,
     double SpeedKmh,
     double ThrottlePercent,
     string Station,

@@ -38,4 +38,3 @@ Full GET route table lives in `FicsitRemoteMonitoring.cpp`. ~80 GET endpoints + 
 
 ## getSinkList note
 `/getSinkList` is `.RequiresGameThread()` and returns per-item sink points (`Name`,`ClassName`,`Points`,`PointsOverride`). The AWESOME-sink COUPON progress is a separate endpoint `/getResourceSink`. Issue body said "getSinkList" — but no #12-#14 tool consumes it, so it is inventory-only here. Flagged for whoever files the sink tool.
-</content>

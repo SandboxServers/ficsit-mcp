@@ -7,7 +7,7 @@ namespace FicsitMcp.Domain.Frm.Model;
 /// </summary>
 /// <param name="Name">Vehicle name.</param>
 /// <param name="ClassName">Native vehicle class.</param>
-/// <param name="Location">Compact world position.</param>
+/// <param name="Location">Compact world position, or <c>null</c> when FRM reported no location.</param>
 /// <param name="PathName">Assigned automation path name; empty when none.</param>
 /// <param name="Status">FRM status/form string (verbatim).</param>
 /// <param name="Driver">Driving player's name, or empty when nobody is driving.</param>
@@ -23,7 +23,7 @@ namespace FicsitMcp.Domain.Frm.Model;
 public sealed record FrmVehicle(
     string Name,
     string ClassName,
-    FrmLocation Location,
+    FrmLocation? Location,
     string PathName,
     string Status,
     string Driver,

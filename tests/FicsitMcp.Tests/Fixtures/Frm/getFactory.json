@@ -30,7 +30,6 @@
     "ID": "Build_AssemblerMk1_C_2147480002",
     "Name": "Assembler",
     "ClassName": "Build_AssemblerMk1_C",
-    "location": { "x": 130000.0, "y": -34000.0, "z": 12000.0, "rotation": 0.0 },
     "Recipe": "Unassigned",
     "RecipeClassName": "Unassigned",
     "production": [

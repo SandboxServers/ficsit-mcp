@@ -45,6 +45,32 @@ public sealed class FrmAnomalyTests
     }
 
     [Fact]
+    public async Task GetTrains_DerailedTrain_SetsBothDerailedAndNoPathFlags()
+    {
+        // Combination anomaly: a derailed train that also has no path must carry BOTH flags, so a
+        // summary call sees the full picture rather than the first problem only.
+        ImmutableArray<FrmTrain> trains =
+            await FrmFixtures.ClientServing("getTrains.json").GetTrainsAsync(CancellationToken.None);
+
+        FrmTrain train = trains.Single(t => t.Name == "Derailed Hauler");
+        Assert.True(train.Anomalies.HasFlag(FrmMobileAnomaly.Derailed));
+        Assert.True(train.Anomalies.HasFlag(FrmMobileAnomaly.NoPath));
+    }
+
+    [Fact]
+    public async Task GetTrains_StationarySelfDriverWithNoneSuffixDockingState_IsNotStuck()
+    {
+        // The docking state "ETrainDockingState::TDS_RampNone" merely ENDS with "None" — it is not the
+        // not-docking sentinel "TDS_None". Exact-match docking logic must treat it as mid-dock, so this
+        // stationary self-driver must NOT be flagged Stuck (regression guard for the EndsWith bug).
+        ImmutableArray<FrmTrain> trains =
+            await FrmFixtures.ClientServing("getTrains.json").GetTrainsAsync(CancellationToken.None);
+
+        FrmTrain train = trains.Single(t => t.Name == "Docking None-Suffix Train");
+        Assert.Equal(FrmMobileAnomaly.None, train.Anomalies);
+    }
+
+    [Fact]
     public async Task GetDrones_UnpairedDrone_FlagsNoStation()
     {
         ImmutableArray<FrmDrone> drones =

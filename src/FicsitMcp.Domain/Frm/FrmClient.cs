@@ -125,6 +125,10 @@ public sealed class FrmClient : IFrmClient
             ImmutableArray<TRaw> raw = await DeserializeAsync(endpoint, response, typeInfo, cancellationToken)
                 .ConfigureAwait(false);
 
+            // Not redundant: this guards a real System.Text.Json case. A 2xx body that is the literal
+            // JSON token `null` (rather than `[]`) deserializes to default(ImmutableArray<TRaw>), whose
+            // .IsDefault is true and which throws NullReferenceException the moment it is enumerated.
+            // IsDefaultOrEmpty folds both that default and a genuinely empty array into an empty result.
             if (raw.IsDefaultOrEmpty)
             {
                 return [];
@@ -166,12 +170,30 @@ public sealed class FrmClient : IFrmClient
             return;
         }
 
-        // A 404 on a KNOWN endpoint means the port is answering but FRM is not serving this route —
-        // wrong server on the port, a disabled/renamed endpoint, or a mod-version mismatch. Treat it
-        // as FRM-unreachable with the actionable remedy rather than a bare HTTP error.
-        string reason = response.StatusCode == HttpStatusCode.NotFound
-            ? "endpoint not found (HTTP 404) — wrong server on the port, or a mod-version mismatch"
-            : $"unexpected HTTP {(int)response.StatusCode} {response.StatusCode}";
+        // Distinguish the honest failure modes by status family:
+        // - 404 on a KNOWN route: the port answers but FRM is not serving this endpoint — wrong server
+        //   on the port, a disabled/renamed route, or a mod-version mismatch.
+        // - 5xx: FRM (or whatever is on the port) is PRESENT but erroring server-side — the request
+        //   reached a server that failed to produce the payload, not an absent/unstarted mod. Calling
+        //   it out separately stops the model from chasing "is the mod installed?" when the real fix is
+        //   server-side (e.g. an FRM exception on the game thread, or a transient overload — retry).
+        // - other non-2xx: report the raw status verbatim.
+        int statusCode = (int)response.StatusCode;
+        string reason;
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            reason = "endpoint not found (HTTP 404) — wrong server on the port, or a mod-version mismatch";
+        }
+        else if (statusCode >= 500)
+        {
+            reason = $"server error (HTTP {statusCode} {response.StatusCode}) — FRM is present but failed to "
+                + "serve this endpoint (a mod-side error on the game thread, or a transient overload); retry, "
+                + "and check the in-game console if it persists";
+        }
+        else
+        {
+            reason = $"unexpected HTTP {statusCode} {response.StatusCode}";
+        }
 
         _logger.LogWarning(
             "Surface {surface} endpoint {endpoint} degraded: {reason}",

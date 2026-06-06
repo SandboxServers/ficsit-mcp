@@ -19,7 +19,7 @@ namespace FicsitMcp.Domain.Frm.Model;
 /// <param name="Id">Stable per-building id (FRM <c>ID</c>, the actor name).</param>
 /// <param name="Name">Building display/tag name.</param>
 /// <param name="ClassName">Native building class, e.g. <c>Build_ConstructorMk1_C</c>.</param>
-/// <param name="Location">Compact world position.</param>
+/// <param name="Location">Compact world position, or <c>null</c> when FRM reported no location.</param>
 /// <param name="Recipe">Current recipe display name, or empty when unconfigured.</param>
 /// <param name="RecipeClassName">Current recipe class name.</param>
 /// <param name="Productivity">Uptime/productivity percentage (0&#8211;100).</param>
@@ -37,7 +37,7 @@ public sealed record FrmFactoryBuilding(
     string Id,
     string Name,
     string ClassName,
-    FrmLocation Location,
+    FrmLocation? Location,
     string Recipe,
     string RecipeClassName,
     double Productivity,

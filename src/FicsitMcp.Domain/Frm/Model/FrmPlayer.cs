@@ -7,7 +7,7 @@ namespace FicsitMcp.Domain.Frm.Model;
 /// </summary>
 /// <param name="Name">Player name.</param>
 /// <param name="ClassName">Native player class.</param>
-/// <param name="Location">Compact world position.</param>
+/// <param name="Location">Compact world position, or <c>null</c> when FRM reported no location.</param>
 /// <param name="SpeedKmh">Current movement speed in km/h.</param>
 /// <param name="Online">Whether the player is currently online.</param>
 /// <param name="Health">Current health points.</param>
@@ -15,7 +15,7 @@ namespace FicsitMcp.Domain.Frm.Model;
 public sealed record FrmPlayer(
     string Name,
     string ClassName,
-    FrmLocation Location,
+    FrmLocation? Location,
     double SpeedKmh,
     bool Online,
     double Health,

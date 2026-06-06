@@ -56,4 +56,3 @@ manual driving. Keep both conditions when tuning.
 
 ## Anomaly enum design
 Surface a `Anomalies` flags/list per mobile entity so a SUMMARY reveals trouble without a raw dump. Tuned-out false positives to remember: a parked/idle vehicle with a driver (Driver != "") is NOT an anomaly (player is manually driving); only flag idle when Autopilot is on. A train with Status="Parked" at its station mid-timetable is normal, not stuck.
-</content>

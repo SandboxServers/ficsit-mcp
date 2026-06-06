@@ -100,9 +100,33 @@ public sealed class FrmClientDeserializationTests
         Assert.Equal(100.0, player.Health);
         Assert.Equal(18.5, player.SpeedKmh);
         // Coordinates rounded to whole centimetres; rotation kept to one decimal.
-        Assert.Equal(12346, player.Location.X);
-        Assert.Equal(-98765, player.Location.Y);
-        Assert.Equal(359.9, player.Location.RotationDegrees);
+        FrmLocation location = Assert.IsType<FrmLocation>(player.Location);
+        Assert.Equal(12346, location.X);
+        Assert.Equal(-98765, location.Y);
+        Assert.Equal(359.9, location.RotationDegrees);
+    }
+
+    [Fact]
+    public async Task GetFactory_BuildingWithNoLocation_HasNullLocation()
+    {
+        FrmClient client = FrmFixtures.ClientServing("getFactory.json");
+
+        ImmutableArray<FrmFactoryBuilding> buildings = await client.GetFactoryAsync(CancellationToken.None);
+
+        // The constructor has a location; the assembler fixture row omits the `location` object.
+        // Null must mean "FRM gave no location", distinct from a building at world origin.
+        Assert.NotNull(buildings[0].Location);
+        Assert.Null(buildings[1].Location);
+    }
+
+    [Fact]
+    public async Task GetFactory_EmptyArray_ReturnsEmptyWithoutThrowing()
+    {
+        FrmClient client = FrmFixtures.ClientServing("empty.json");
+
+        ImmutableArray<FrmFactoryBuilding> buildings = await client.GetFactoryAsync(CancellationToken.None);
+
+        Assert.True(buildings.IsEmpty);
     }
 
     [Fact]

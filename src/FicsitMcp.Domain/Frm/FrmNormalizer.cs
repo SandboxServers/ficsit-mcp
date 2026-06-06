@@ -24,21 +24,40 @@ public static class FrmNormalizer
 
     // A self-driving entity reporting a speed at or below this (km/h) is treated as not moving, for
     // the stuck/idle heuristic. Small non-zero floor absorbs FRM's float jitter around a standstill.
+    //
+    // Known false-positive window: an autopilot entity genuinely crawling between 0 and this value —
+    // e.g. a train inching through a congested junction at ~0.05 km/h — reads as stationary and can
+    // momentarily flag Stuck. This is a tuned trade-off: a lower floor would let standstill jitter
+    // leak through as motion and miss real stalls. The flag is a transient hint, not a latch, so a
+    // crawling entity clears it on the next poll once it passes the floor. See README "Anomaly
+    // derivation" for the full window.
     private const double StationarySpeedKmh = 0.1;
 
-    /// <summary>Rounds a verbose FRM <c>location</c> to a compact <see cref="FrmLocation"/>.</summary>
-    public static FrmLocation ToLocation(RawLocation? raw)
+    /// <summary>
+    /// Rounds a verbose FRM <c>location</c> to a compact <see cref="FrmLocation"/>, or <c>null</c>
+    /// when FRM gave no location object. Null means "FRM reported no position" — distinct from a
+    /// building genuinely at world origin <c>(0,0,0)</c>, which a fake origin would mask.
+    /// </summary>
+    public static FrmLocation? ToLocation(RawLocation? raw)
     {
         if (raw is null)
         {
-            return new FrmLocation(0, 0, 0, 0);
+            return null;
+        }
+
+        // Round rotation to one decimal, then wrap a rounded-up 360.0 back to 0.0: FRM normalizes
+        // headings to the half-open range [0, 360), so a raw 359.95 rounding to 360.0 must fold to 0.
+        double rotation = Math.Round(raw.Rotation, 1);
+        if (rotation >= 360.0)
+        {
+            rotation -= 360.0;
         }
 
         return new FrmLocation(
             (long)Math.Round(raw.X),
             (long)Math.Round(raw.Y),
             (long)Math.Round(raw.Z),
-            Math.Round(raw.Rotation, 1));
+            rotation);
     }
 
     /// <summary>Normalizes a <c>/getProdStats</c> row.</summary>
@@ -183,9 +202,15 @@ public static class FrmNormalizer
             anomalies |= FrmMobileAnomaly.NoPath;
         }
 
-        // Stuck: autopilot on, following a path, has fuel, yet not moving. A vehicle a player is
-        // manually driving (Driver != "") and idling is NOT stuck — only autopilot idling counts,
-        // which the Autopilot gate already enforces.
+        // Stuck: autopilot on, following a path, has fuel, yet not moving.
+        //
+        // Deliberately NOT flagged (tuned-out false positive): a vehicle a player is driving manually
+        // and leaving idle — Autopilot=false, possibly with the driver AFK — is NOT "stuck". A parked
+        // manual vehicle is a normal, intentional state, not an automation fault, and flagging it
+        // would cry wolf on every player who hops out of their truck. The Autopilot gate below is what
+        // enforces this: with Autopilot=false the vehicle can never reach the Stuck branch regardless
+        // of its speed or driver. The cost is that a genuinely stuck manual vehicle (which FRM cannot
+        // distinguish from a deliberately parked one) is not surfaced — an accepted blind spot.
         if (raw.Autopilot
             && raw.FollowingPath
             && raw.HasFuel
@@ -280,9 +305,35 @@ public static class FrmNormalizer
         !string.IsNullOrEmpty(diagnostic)
         && !string.Equals(diagnostic, NoError, StringComparison.OrdinalIgnoreCase);
 
-    // The train is NOT mid-docking when its docking state is absent or the explicit idle/none state.
-    // FRM serializes ETrainDockingState; "None" is the not-docking value. Treat empty as not-docking.
-    private static bool IsIdleDocking(string? docking) =>
-        string.IsNullOrEmpty(docking)
-        || docking.EndsWith("None", StringComparison.OrdinalIgnoreCase);
+    // FRM serializes ETrainDockingState as its full scoped name, e.g. "ETrainDockingState::TDS_None".
+    // TDS_None is the only not-docking value; every other member (TDS_Docking, TDS_WaitForTransfer,
+    // …) means the train IS mid-dock and must NOT be flagged stuck.
+    private static readonly string[] NotDockingStates =
+    {
+        "ETrainDockingState::TDS_None",
+        "TDS_None",
+        "None",
+    };
+
+    // The train is NOT mid-docking when its docking state is absent or EXACTLY one of the known
+    // not-docking sentinels. Matched by ordinal equality (not EndsWith) so a future docking member
+    // whose name merely ends in "None" — e.g. a hypothetical "RampNone" — is treated as docking, not
+    // idle, and so does not falsely satisfy the stuck heuristic.
+    private static bool IsIdleDocking(string? docking)
+    {
+        if (string.IsNullOrEmpty(docking))
+        {
+            return true;
+        }
+
+        foreach (string state in NotDockingStates)
+        {
+            if (string.Equals(docking, state, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }

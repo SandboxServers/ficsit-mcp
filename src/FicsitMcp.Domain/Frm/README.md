@@ -59,18 +59,51 @@ is recorded in the `frm-observe-surface` agent memory.
 - **Case-insensitive + string-number tolerant.** FRM's casing is inconsistent between endpoints
   (PascalCase object fields, but lowercase `location`/`features`/`production`). `FrmJsonContext`
   enables `PropertyNameCaseInsensitive` and `AllowReadingFromString` as defence in depth.
-- **Coordinates/rotations are normalized.** FRM emits world centimetres at sub-millimetre precision
-  and a rotation already converted to 0–360° (0 = due north). `FrmLocation` rounds coords to whole
-  cm and rotation to one decimal; verbose `BoundingBox` / `ColorSlot` / GeoJSON `features` are
-  dropped entirely.
+- **Coordinates/rotations are normalized.** FRM emits world centimetres (UE world space, 1 m = 100
+  units; verified) at sub-millimetre precision and a rotation already folded to the half-open range
+  `[0, 360)` (verified). The zero heading is documented by FRM as "due north" and surfaced as such,
+  but the exact world axis north maps to is **assumed**, not re-derived here — treat the heading as a
+  stable relative bearing. `FrmLocation` rounds coords to whole cm and rotation to one decimal
+  (wrapping a rounded-up `360.0` back to `0.0`); a missing FRM `location` normalizes to a **null**
+  `FrmLocation` (distinct from a real origin), and verbose `BoundingBox` / `ColorSlot` / GeoJSON
+  `features` are dropped entirely. Full coordinate-system notes live on the `FrmLocation` record.
 
 ## Derived anomaly flags
 
 Mobile/logistics entities (trains, drones, vehicles) carry a derived `FrmMobileAnomaly` flags value
 so a single summary call reveals trouble without cross-referencing a dump: `Derailed`, `NoFuel`,
-`LowFuel`, `NoPath`, `Stuck`, `SelfDrivingError`, `NoStation`. The derivation (and the false
-positives tuned out — e.g. a manually-driven idle vehicle is *not* "stuck", a train parked at a
-station mid-timetable is *not* "stuck") lives in `FrmNormalizer`.
+`LowFuel`, `NoPath`, `Stuck`, `SelfDrivingError`, `NoStation`. The derivation lives in
+`FrmNormalizer`; the exact trigger for each flag, and the false positives/negatives deliberately
+tuned out, are spelled out below for tool consumers.
+
+### Anomaly derivation (exact triggers + known blind spots)
+
+A flag is a **transient hint** computed per poll, not a latched state — a momentary trigger clears on
+the next read once the underlying condition passes. `Stuck` in particular is recomputed every call.
+
+**Trains** (`/getTrains` → `FrmTrain`):
+
+| Flag | Triggers when | Notes / false-positive window |
+|---|---|---|
+| `Derailed` | `Derailed` **or** `PendingDerail` is true | Direct FRM flags; pending-collision counts. |
+| `SelfDrivingError` | `SelfDriving` present and not `"NoError"` | Empty `SelfDriving` = manual driving, **not** a fault. |
+| `NoPath` | `Path` present and not `"NoError"` | Auto-train cannot route to its next stop. |
+| `Stuck` | self-driving healthy (`SelfDriving="NoError"`, non-empty) **and** not derailed **and** `\|ForwardSpeed\| ≤ 0.1 km/h` **and** docking is a not-docking state | **FP window:** a train legitimately crawling at 0 – 0.1 km/h through a junction reads as stationary and can flag Stuck for that poll (see `StationarySpeedKmh`). A train mid-dock (`TDS_Docking`, `TDS_WaitForTransfer`, …) is correctly **not** stuck — only the exact `TDS_None` sentinel counts as not-docking. **FN:** a manually-driven train (empty `SelfDriving`) is never evaluated for Stuck. |
+
+**Vehicles** (`/getVehicles` → `FrmVehicle`):
+
+| Flag | Triggers when | Notes / false-positive window |
+|---|---|---|
+| `NoFuel` | `HasFuel` is false | Hard failure: stranded. |
+| `LowFuel` | `HasFuel` true **and** `Autopilot` true **and** `HasFuelForRoundtrip` false | Soft "will strand" warning; only for autopilot vehicles. |
+| `NoPath` | `Autopilot` true **and** `FollowingPath` false | Autopilot on but off its path. |
+| `Stuck` | `Autopilot` true **and** `FollowingPath` true **and** `HasFuel` true **and** `\|ForwardSpeed\| ≤ 0.1 km/h` | **Intentional FN:** a manually-driven idle vehicle (`Autopilot=false`, even with an AFK driver) is **never** flagged Stuck — a parked manual vehicle is a normal player state, not an automation fault. The Autopilot gate enforces this. The accepted blind spot is a genuinely stuck manual vehicle, which FRM cannot distinguish from a deliberately parked one. **FP window:** same 0 – 0.1 km/h crawl window as trains. |
+
+**Drones** (`/getDrone` → `FrmDrone`):
+
+| Flag | Triggers when | Notes |
+|---|---|---|
+| `NoStation` | `HasPairedStation` is false | Drone has no paired port → nowhere to fly. Drones have no fuel/path concept in FRM, so those flags never apply. |
 
 ## Graceful degradation
 

@@ -52,5 +52,21 @@
     "Docking": "ETrainDockingState::TDS_None",
     "Path": "NoError",
     "Vehicles": []
+  },
+  {
+    "Name": "Docking None-Suffix Train",
+    "ClassName": "BP_Train_C",
+    "location": { "x": 230000.0, "y": 165000.0, "z": 10000.0, "rotation": 90.0 },
+    "ForwardSpeed": 0.0,
+    "ThrottlePercent": 0.0,
+    "TrainStation": "Coal Loop",
+    "Derailed": false,
+    "PendingDerail": false,
+    "Status": "Self-Driving",
+    "TimeTableIndex": 0,
+    "SelfDriving": "NoError",
+    "Docking": "ETrainDockingState::TDS_RampNone",
+    "Path": "NoError",
+    "Vehicles": []
   }
 ]

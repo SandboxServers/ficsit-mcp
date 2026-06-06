@@ -10,7 +10,7 @@ namespace FicsitMcp.Domain.Frm.Model;
 /// </remarks>
 /// <param name="Name">Drone name.</param>
 /// <param name="ClassName">Native drone class.</param>
-/// <param name="Location">Compact world position.</param>
+/// <param name="Location">Compact world position, or <c>null</c> when FRM reported no location.</param>
 /// <param name="HomeStation">Home drone-port name.</param>
 /// <param name="PairedStation">Paired (destination) drone-port name; empty when unpaired.</param>
 /// <param name="HasPairedStation">Whether a paired station exists.</param>
@@ -22,7 +22,7 @@ namespace FicsitMcp.Domain.Frm.Model;
 public sealed record FrmDrone(
     string Name,
     string ClassName,
-    FrmLocation Location,
+    FrmLocation? Location,
     string HomeStation,
     string PairedStation,
     bool HasPairedStation,
