@@ -26,7 +26,12 @@ public sealed class FinBridgeOptions : IConfigurableSurface, IValidatableObject
     /// bridge is not configured.
     /// </summary>
     [Url]
-    public string? ListenUrl { get; set; }
+    public string? ListenUrl
+    {
+        get;
+        // Blank means "unset" — see DedicatedServerOptions.BaseUrl for the rationale.
+        set => field = string.IsNullOrWhiteSpace(value) ? null : value;
+    }
 
     /// <summary>
     /// Shared secret the in-world Lua agent must present to connect. Redacted in logs and tool

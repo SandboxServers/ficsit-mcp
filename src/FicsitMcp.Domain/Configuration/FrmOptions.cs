@@ -28,7 +28,12 @@ public sealed class FrmOptions : IConfigurableSurface, IValidatableObject
     /// Unset means this surface is not configured.
     /// </summary>
     [Url]
-    public string? BaseUrl { get; set; }
+    public string? BaseUrl
+    {
+        get;
+        // Blank means "unset" — see DedicatedServerOptions.BaseUrl for the rationale.
+        set => field = string.IsNullOrWhiteSpace(value) ? null : value;
+    }
 
     /// <summary>
     /// How to reach FRM. Defaults to <see cref="FrmTransportMode.Direct"/>; the passthrough

@@ -283,4 +283,56 @@ public sealed class SurfaceOptionsTests
         Assert.Null(secret.Reveal());
         Assert.Equal("(unset)", secret.ToString());
     }
+
+    [Fact]
+    public void ShippedAppsettingsJson_ValidatesCleanly_WithAllSurfacesDormant()
+    {
+        // Arrange: bind the REAL config file shipped with the host (linked into the test
+        // output as appsettings.shipped.json). Regression test for an adversarial-review
+        // finding: the shipped file's blank URL placeholders crashed startup because [Url]
+        // rejects "" — in-memory test config could never catch that.
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.shipped.json"))
+            .Build();
+
+        var services = new ServiceCollection();
+        services.AddSurfaceOptions(configuration);
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        // Act: startup validation must accept the file exactly as shipped...
+        provider.GetRequiredService<IStartupValidator>().Validate();
+
+        // Assert: ...and its blank placeholders must mean "dormant", not "invalid".
+        Assert.False(provider.GetRequiredService<IOptions<DedicatedServerOptions>>().Value.IsConfigured);
+        Assert.False(provider.GetRequiredService<IOptions<FrmOptions>>().Value.IsConfigured);
+        Assert.False(provider.GetRequiredService<IOptions<FinBridgeOptions>>().Value.IsConfigured);
+    }
+
+    [Fact]
+    public void BlankUrls_NormalizeToUnset_InsteadOfFailingUrlValidation()
+    {
+        // Arrange: blank URLs (empty env var, placeholder in a config file) must read as
+        // "surface not configured" — the documented contract — not as a [Url] failure.
+        var appsettings = new Dictionary<string, string?>
+        {
+            ["DedicatedServer:BaseUrl"] = "",
+            ["Frm:BaseUrl"] = "   ",
+            ["FinBridge:ListenUrl"] = "",
+        };
+        using ServiceProvider provider = BuildProvider(appsettings);
+
+        // Act
+        provider.GetRequiredService<IStartupValidator>().Validate();
+        DedicatedServerOptions dedicated = provider.GetRequiredService<IOptions<DedicatedServerOptions>>().Value;
+        FrmOptions frm = provider.GetRequiredService<IOptions<FrmOptions>>().Value;
+        FinBridgeOptions fin = provider.GetRequiredService<IOptions<FinBridgeOptions>>().Value;
+
+        // Assert: normalized to null, all dormant, nothing thrown.
+        Assert.Null(dedicated.BaseUrl);
+        Assert.Null(frm.BaseUrl);
+        Assert.Null(fin.ListenUrl);
+        Assert.False(dedicated.IsConfigured);
+        Assert.False(frm.IsConfigured);
+        Assert.False(fin.IsConfigured);
+    }
 }

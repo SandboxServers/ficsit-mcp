@@ -6,7 +6,14 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-var builder = Host.CreateApplicationBuilder(args);
+// MCP clients launch this server with an arbitrary working directory (their own, not ours),
+// and the default content root is the cwd — which would silently skip appsettings.json.
+// Anchor the content root to the binary so the config file next to it is always found.
+var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
+{
+    Args = args,
+    ContentRootPath = AppContext.BaseDirectory,
+});
 
 // MCP clients pass surface config (including secrets) via env vars in their mcpServers
 // block, so FICSITMCP_-prefixed env vars must WIN over appsettings.json. Adding this

@@ -16,7 +16,7 @@
 
   <!--
     The non-web SDK does not auto-include appsettings.json. Copy it next to the host so
-    Host.CreateApplicationBuilder finds it at the content root. Surface secrets are NOT in
+    the host finds it: Program.cs anchors the content root to AppContext.BaseDirectory (MCP clients launch us with an arbitrary cwd). Surface secrets are NOT in
     this file (they come from FICSITMCP_ env vars), so shipping it carries no credentials.
   -->
   <ItemGroup>

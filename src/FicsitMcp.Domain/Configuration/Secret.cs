@@ -48,4 +48,10 @@ public readonly struct Secret : IEquatable<Secret>
 
     /// <summary>Implicitly wraps a raw string so config binding and call sites read naturally.</summary>
     public static implicit operator Secret(string? value) => new(value);
+
+    /// <summary>Value equality, consistent with <see cref="Equals(Secret)"/>.</summary>
+    public static bool operator ==(Secret left, Secret right) => left.Equals(right);
+
+    /// <summary>Value inequality, consistent with <see cref="Equals(Secret)"/>.</summary>
+    public static bool operator !=(Secret left, Secret right) => !left.Equals(right);
 }

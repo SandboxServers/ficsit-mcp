@@ -27,7 +27,14 @@ public sealed class DedicatedServerOptions : IConfigurableSurface, IValidatableO
     /// Unset means this surface is not configured.
     /// </summary>
     [Url]
-    public string? BaseUrl { get; set; }
+    public string? BaseUrl
+    {
+        get;
+        // Blank ("" or whitespace — e.g. the shipped appsettings.json placeholder or an empty
+        // env var) means "unset": normalize to null so [Url] (which accepts null but rejects "")
+        // treats a deliberately blank value as a dormant surface instead of a startup failure.
+        set => field = string.IsNullOrWhiteSpace(value) ? null : value;
+    }
 
     /// <summary>
     /// Admin API token used as the bearer credential. Redacted in logs and tool output via

@@ -20,4 +20,11 @@
     <ProjectReference Include="..\..\src\FicsitMcp.Domain\FicsitMcp.Domain.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Link the REAL shipped config file into the test output so tests can bind it as-is.
+         An adversarial review caught a startup crash that only the shipped file could
+         reproduce (empty-string URLs vs [Url]); in-memory config can't regression-test that. -->
+    <Content Include="..\..\src\FicsitMcp\appsettings.json" Link="appsettings.shipped.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
