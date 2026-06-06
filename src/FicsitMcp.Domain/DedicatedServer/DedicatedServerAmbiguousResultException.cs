@@ -19,6 +19,27 @@ namespace FicsitMcp.Domain.DedicatedServer;
 /// failure) so tooling can explain the situation. The <see cref="FunctionName"/> identifies which
 /// call was left in an unknown state.
 /// </para>
+/// <para>
+/// <b>Recovery strategy for callers.</b> Do NOT blindly re-invoke the function — that is exactly the
+/// double-fire this exception exists to prevent. Instead, QUERY state to determine whether the
+/// operation already took effect, then act on the answer:
+/// <list type="bullet">
+///   <item><description><c>SaveGame</c> / <c>UploadSaveGame</c> / <c>DeleteSaveFile</c> /
+///     <c>DeleteSaveSession</c>: call <see cref="IDedicatedServerApiClient.EnumerateSessionsAsync"/>
+///     and check whether the target save now exists (or is gone) before retrying.</description></item>
+///   <item><description><c>LoadGame</c> / <c>CreateNewGame</c>: call
+///     <see cref="IDedicatedServerApiClient.QueryServerStateAsync"/> and compare the active session
+///     name / game state to the intended target.</description></item>
+///   <item><description><c>RunCommand</c>: there is no generic way to confirm an arbitrary command's
+///     effect — surface the ambiguity to the human operator rather than re-running it.</description></item>
+///   <item><description><c>Shutdown</c>: probe with
+///     <see cref="IDedicatedServerApiClient.HealthCheckAsync"/> /
+///     <see cref="IDedicatedServerApiClient.VerifyAuthenticationTokenAsync"/>; an unreachable/401
+///     server indicates the shutdown likely took effect.</description></item>
+/// </list>
+/// In all cases, first re-establish a valid token (the 401 that triggered this may mean the token
+/// rotated) before issuing the state query.
+/// </para>
 /// </remarks>
 public sealed class DedicatedServerAmbiguousResultException : DedicatedServerApiException
 {

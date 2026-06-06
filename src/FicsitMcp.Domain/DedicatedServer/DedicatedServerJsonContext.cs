@@ -28,6 +28,7 @@ namespace FicsitMcp.Domain.DedicatedServer;
     UseStringEnumConverter = true,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 // Envelopes.
+[JsonSerializable(typeof(DedicatedServerRequestEnvelope))]
 [JsonSerializable(typeof(DedicatedServerErrorEnvelope))]
 [JsonSerializable(typeof(JsonElement))]
 // Auth.

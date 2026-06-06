@@ -93,7 +93,9 @@ prefix is stripped and `__` is the section delimiter, so `FICSITMCP_Frm__BaseUrl
 **Options keys** (env var = `FICSITMCP_<Section>__<Key>`):
 
 - `DedicatedServer`: `BaseUrl` (e.g. `https://127.0.0.1:7777`), `AdminToken` (secret, bearer
-  auth), `DangerousAcceptAnyCert` (bool, **dev only** — skips TLS thumbprint pinning),
+  auth — **optional**: omit it to run in "no token yet" bootstrap mode and mint a token via
+  `ClaimServer`/`PasswordLogin`; see the surface-optionality contract below),
+  `DangerousAcceptAnyCert` (bool, **dev only** — skips TLS thumbprint pinning),
   `CertPinFilePath` (optional, **default** `%LocalAppData%/ficsit-mcp/cert-pins.json` — override the
   TOFU pin file location; containers/read-only deployments should point this at a mounted writable
   path so pins survive restarts).
@@ -102,12 +104,27 @@ prefix is stripped and `__` is the section delimiter, so `FICSITMCP_Frm__BaseUrl
 - `FinBridge`: `ListenUrl` (e.g. `http://0.0.0.0:8421`), `SharedSecret` (secret the in-world
   Lua agent must present).
 
-**Surface-optionality contract.** A surface is *configured* when its activating URL is set.
-A configured-but-incomplete surface (URL set, credential missing) is a validation error; a
-fully-absent surface is a valid opt-out. Tools assert their surface with
-`options.Require()` (`SurfaceConfigurationExtensions`), which throws
-`SurfaceNotConfiguredException` naming the exact env var, e.g.
-`"FRM endpoint not configured; set FICSITMCP_Frm__BaseUrl"`.
+**Surface-optionality contract.** A surface is *configured* when its activating URL is set. A
+fully-absent surface is a valid opt-out. Tools assert their surface with `options.Require()`
+(`SurfaceConfigurationExtensions`), which throws `SurfaceNotConfiguredException` naming the exact env
+var, e.g. `"FRM endpoint not configured; set FICSITMCP_Frm__BaseUrl"`.
+
+*"Configured-but-incomplete" is surface-specific.* Whether a URL-set-but-credential-missing surface
+is a validation error depends on whether the credential is required to *operate at all* or can be
+*minted later*:
+
+- **`FinBridge` (inbound listener): credential REQUIRED when configured.** `ListenUrl` without
+  `SharedSecret` is a startup validation error. An open inbound listener with no shared secret is an
+  exposed attack surface, so it must never start half-configured.
+- **`DedicatedServer` (outbound client): credential OPTIONAL when configured.** `BaseUrl` without
+  `AdminToken` is **valid** — it is the deliberate "no token yet" bootstrap mode. The unauthenticated
+  functions (`HealthCheck`, `PasswordLogin`, `PasswordlessLogin`, `ClaimServer`) run tokenless and
+  *mint* the first token, which the (singleton) client then adopts for subsequent authenticated calls.
+  The client enforces auth **per function** at call time: an authenticated function invoked with no
+  token yet fails fast with an actionable `DedicatedServerAuthException` (naming the
+  `FICSITMCP_DedicatedServer__AdminToken` env var and the `PasswordLogin`/`ClaimServer` remedies)
+  rather than failing the whole host at startup. An *outbound* client with a deferred credential is a
+  fundamentally different risk from an *inbound* open listener, hence the asymmetry.
 
 **Secrets discipline.** `AdminToken` / `SharedSecret` are typed `Secret`, not `string`:
 `ToString()` returns `***`, and both the JSON and TypeConverter serializers emit the redacted

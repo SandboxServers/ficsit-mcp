@@ -34,12 +34,17 @@ namespace FicsitMcp.Domain.DedicatedServer;
 /// an auth error for the caller to re-login.
 /// </para>
 /// </remarks>
-public sealed class DedicatedServerApiClient : IDedicatedServerApiClient
+public sealed class DedicatedServerApiClient : IDedicatedServerApiClient, IDisposable
 {
     private const string ApiPath = "/api/v1";
     private const string MultipartCharset = "utf-8";
 
-    private readonly SurfaceHttpClient _http;
+    // Resolves the per-surface transport shell. This is a FACTORY, not a captured instance, because
+    // the client is a singleton (so its adopted-token state survives across tool calls) while the
+    // underlying HttpClient must be obtained from IHttpClientFactory PER CALL — capturing one client
+    // for the singleton's lifetime would pin a single handler and defeat the factory's handler
+    // rotation (DNS/socket refresh). The shell is a cheap wrapper, so creating one per send is fine.
+    private readonly Func<SurfaceHttpClient> _httpFactory;
     private readonly DedicatedServerOptions _options;
     private readonly SemaphoreSlim _tokenLock = new(1, 1);
 
@@ -48,17 +53,27 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient
     private string? _cachedToken;
 
     /// <summary>
-    /// Creates the client over the configured surface client and options. Seeds the token cache with
-    /// the config API token when present (the preferred credential).
+    /// Creates the client over a factory that produces the per-surface transport shell on demand, and
+    /// the surface options. Seeds the token cache with the config API token when present (the
+    /// preferred credential). See <see cref="_httpFactory"/> for why a factory (not an instance) is
+    /// taken given the singleton lifetime.
     /// </summary>
-    public DedicatedServerApiClient(SurfaceHttpClient http, DedicatedServerOptions options)
+    public DedicatedServerApiClient(Func<SurfaceHttpClient> httpFactory, DedicatedServerOptions options)
     {
-        ArgumentNullException.ThrowIfNull(http);
+        ArgumentNullException.ThrowIfNull(httpFactory);
         ArgumentNullException.ThrowIfNull(options);
-        _http = http;
+        _httpFactory = httpFactory;
         _options = options;
         _cachedToken = options.AdminToken.Reveal();
     }
+
+    /// <summary>
+    /// Disposes the token-mutation lock. The client is registered as a SINGLETON (see
+    /// <c>DedicatedServerClientRegistration</c>), so the DI container owns this lifetime and calls
+    /// Dispose at container teardown. The wrapped <see cref="SurfaceHttpClient"/>/<see cref="HttpClient"/>
+    /// is owned by <c>IHttpClientFactory</c> and is intentionally NOT disposed here.
+    /// </summary>
+    public void Dispose() => _tokenLock.Dispose();
 
     // ----- Authentication ------------------------------------------------------------------------
 
@@ -229,6 +244,13 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient
         // carries the NEW token; the server begins honoring it on success. We must NOT re-auth/replay
         // on a 401 here (that would race the very invalidation we're causing), so this goes through
         // the single-attempt path. On success we adopt the new token the caller supplied.
+        //
+        // NB: this response is SYNTHESIZED locally from the request's token, not parsed from the
+        // server (SetAdminPassword returns 204 No Content per the OAS — the new token is the one we
+        // already hold). This is correct today but FRAGILE: if a future server revision returns a
+        // body with additional fields, they would be silently dropped here and this would need to
+        // switch to InvokeAsync<...> to capture them. There is a regression test asserting the
+        // current 204 contract (no body) so a server change that breaks this assumption is caught.
         var response = new AuthenticationTokenResponse(request.AuthenticationToken);
         await InvokeNoContentAsync(
             ApiFunctions.SetAdminPassword,
@@ -384,14 +406,16 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(saveGameContent);
 
-        // Multipart upload is non-idempotent (writes a file, may load it) and not retried. A 401 here
-        // would be ambiguous, but a multipart body backed by a forward-only stream cannot be replayed
-        // anyway, so we always single-attempt and surface auth failures as-is.
+        // Multipart upload is non-idempotent (writes a file, may load it) and is NOT retried — for
+        // two independent reasons: (1) the write is a side effect that must not double-fire, and
+        // (2) the multipart body is backed by a FORWARD-ONLY save stream that cannot be replayed even
+        // if we wanted to. So we always single-attempt (no AllowRetry, no 401 re-auth) and surface
+        // auth failures as-is.
         using HttpRequestMessage message = BuildMultipartUpload(request, saveGameContent);
         ApplyAuth(message, RequireToken());
 
         using HttpResponseMessage response =
-            await _http.SendAsync(message, cancellationToken).ConfigureAwait(false);
+            await _httpFactory().SendAsync(message, cancellationToken).ConfigureAwait(false);
         byte[] body = await ReadBodyBytesAsync(response, cancellationToken).ConfigureAwait(false);
         EnsureSuccessOrThrow(ApiFunctions.UploadSaveGame, response, body, idempotent: false);
     }
@@ -409,34 +433,55 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient
             request, DedicatedServerJsonContext.Default.DownloadSaveGameRequest);
 
         // The download returns a DIRECT binary body (not a JSON envelope) on success, but a JSON
-        // error envelope on failure. We branch on Content-Type, then stream the success body to the
-        // destination in chunks via ReadAsStreamAsync -> CopyToAsync, so we never materialize a second
-        // in-memory copy of the save. (A true header-only completion would require a streaming overload
-        // on the infra SurfaceHttpClient shell, which is dotnet-infra-engineer's to add; today the shell
-        // sends with the default completion, so very large saves are bounded by HttpClient's buffering.)
+        // error envelope on failure. We send with HttpCompletionOption.ResponseHeadersRead so the
+        // response returns as soon as the headers arrive — we then stream the binary success body to
+        // the destination in chunks via ReadAsStreamAsync -> CopyToAsync, so the save is never
+        // buffered whole in memory. Download is a pure read: idempotent (allowRetry/AllowReauth on),
+        // so a 401 with a config token re-auths and replays once, and a transient transport fault may
+        // be retried by the resilience pipeline.
         using HttpResponseMessage response = await SendWithReauthAsync(
             ApiFunctions.DownloadSaveGame,
-            () => BuildEnvelopeRequest(ApiFunctions.DownloadSaveGame, dataElement, allowRetry: false),
+            () => BuildEnvelopeRequest(ApiFunctions.DownloadSaveGame, dataElement, allowRetry: true),
             authenticated: true,
-            idempotent: false,
+            idempotent: true,
             allowReauth: true,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
 
         if (IsJsonResponse(response))
         {
-            // A JSON body here is an error envelope (or, defensively, a non-file JSON) — buffer and
-            // map it. Buffering JSON is safe; only the binary success path must stay streamed.
+            // A JSON body here is an error envelope. Buffer and map it (buffering JSON is safe; only
+            // the binary success path must stay streamed). If it parses as a NON-error JSON success
+            // shape, that is an unexpected response for a binary-download function — fail fast rather
+            // than silently returning an empty/corrupt download.
             byte[] jsonBody = await ReadBodyBytesAsync(response, cancellationToken).ConfigureAwait(false);
             ThrowIfErrorEnvelope(ApiFunctions.DownloadSaveGame, response, jsonBody);
 
-            // A success-shaped JSON with no binary content means there is nothing to stream.
-            return;
+            throw new DedicatedServerApiException(
+                "unexpected_response_shape",
+                $"'{ApiFunctions.DownloadSaveGame}' expected a binary save body but the server returned "
+                + $"a JSON response (Content-Type '{response.Content.Headers.ContentType?.MediaType}') "
+                + "that is not an error envelope.",
+                httpStatusCode: (int)response.StatusCode);
+        }
+
+        if (response.StatusCode == HttpStatusCode.Unauthorized)
+        {
+            // A 401 that survived re-auth/replay (no config token, or the config token was also
+            // rejected) — surface it as the auth error, not a generic content-type failure.
+            throw new DedicatedServerAuthException(
+                "unauthorized", "Authentication token was rejected.", httpStatusCode: 401);
         }
 
         if (!response.IsSuccessStatusCode)
         {
-            throw MapStatusToException(
-                ApiFunctions.DownloadSaveGame, response.StatusCode, idempotent: false, serverMessage: null);
+            // Non-success, non-JSON body (e.g. a text/plain error). Name the content type so the
+            // failure is diagnosable rather than a bare status.
+            throw new DedicatedServerApiException(
+                $"http_{(int)response.StatusCode}",
+                $"'{ApiFunctions.DownloadSaveGame}' failed with HTTP {(int)response.StatusCode} and a "
+                + $"non-JSON body (Content-Type '{response.Content.Headers.ContentType?.MediaType}').",
+                httpStatusCode: (int)response.StatusCode);
         }
 
         await using Stream body = await response.Content.ReadAsStreamAsync(cancellationToken)
@@ -592,13 +637,24 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient
     /// when replay is safe. A factory (not a single message) is taken so the replay uses a brand-new
     /// <see cref="HttpRequestMessage"/> (a sent message cannot be reused).
     /// </summary>
+    /// <remarks>
+    /// The request is NOT disposed until after the response has been fully decided/consumed: an
+    /// <see cref="HttpResponseMessage"/> back-references its <see cref="HttpRequestMessage"/> (via
+    /// <see cref="HttpResponseMessage.RequestMessage"/>, and — under
+    /// <see cref="HttpCompletionOption.ResponseHeadersRead"/> — keeps the request's content stream
+    /// open while the body is read), so disposing the request before the response is done can sever
+    /// that link. We therefore hand ownership of the request to the returned response: the caller's
+    /// <c>using</c> on the response disposes the request too. On replay we dispose the first request
+    /// explicitly because its response is dropped here and never returned to the caller.
+    /// </remarks>
     private async Task<HttpResponseMessage> SendWithReauthAsync(
         string function,
         Func<HttpRequestMessage> requestFactory,
         bool authenticated,
         bool idempotent,
         bool allowReauth,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead)
     {
         HttpRequestMessage first = requestFactory();
         if (authenticated)
@@ -607,20 +663,22 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient
         }
 
         HttpResponseMessage response =
-            await _http.SendAsync(first, cancellationToken).ConfigureAwait(false);
-        first.Dispose();
+            await _httpFactory().SendAsync(first, completionOption, cancellationToken).ConfigureAwait(false);
 
         if (response.StatusCode != HttpStatusCode.Unauthorized || !authenticated || !allowReauth)
         {
+            // Success/normal path: the response (and the request it references) is returned to the
+            // caller, whose `using` disposes both. Do NOT dispose `first` here.
             return response;
         }
 
         // A 401 on a non-idempotent function is ambiguous: the call may already have executed before
         // the token was rejected. Replaying could double-fire the side effect, so refuse and surface
-        // the ambiguity rather than risk it.
+        // the ambiguity rather than risk it. The response is consumed/decided here, so dispose both.
         if (!idempotent)
         {
             response.Dispose();
+            first.Dispose();
             throw new DedicatedServerAmbiguousResultException(
                 function, "unauthorized", "the authentication token was rejected");
         }
@@ -629,16 +687,36 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient
         string? refreshed = await TryReauthenticateAsync(cancellationToken).ConfigureAwait(false);
         if (refreshed is null)
         {
-            // No way to silently re-auth (no config token / no retained password). Surface the 401.
+            // No way to silently re-auth (no config token / no retained password). Surface the 401
+            // response to the caller (whose `using` disposes it and the request). Do NOT dispose
+            // `first` here — the returned response still references it.
             return response;
         }
 
+        // We are discarding this 401 response and never returning it, so dispose it and its request.
         response.Dispose();
+        first.Dispose();
         HttpRequestMessage replay = requestFactory();
         ApplyAuth(replay, refreshed);
         HttpResponseMessage replayResponse =
-            await _http.SendAsync(replay, cancellationToken).ConfigureAwait(false);
-        replay.Dispose();
+            await _httpFactory().SendAsync(replay, completionOption, cancellationToken).ConfigureAwait(false);
+
+        // A SECOND 401 after re-presenting the config token means the CONFIG token itself was rejected
+        // (rotated/revoked server-side) — not just a stale session token. Surface that specifically so
+        // the operator knows to refresh FICSITMCP_DedicatedServer__AdminToken rather than chasing a
+        // generic 401. (Dispose the response + its request since we are throwing, not returning them.)
+        if (replayResponse.StatusCode == HttpStatusCode.Unauthorized)
+        {
+            replayResponse.Dispose();
+            replay.Dispose();
+            throw new DedicatedServerAuthException(
+                "config_token_rejected",
+                "The configured admin API token was rejected by the server even after re-presenting it "
+                + "(it may have been rotated or revoked server-side). Refresh "
+                + "FICSITMCP_DedicatedServer__AdminToken, or re-authenticate via PasswordLogin/ClaimServer.",
+                httpStatusCode: 401);
+        }
+
         return replayResponse;
     }
 
@@ -669,8 +747,8 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient
         var message = new HttpRequestMessage(HttpMethod.Post, ApiPath)
         {
             Content = JsonContent.Create(
-                BuildEnvelopePayload(function, data),
-                DedicatedServerJsonContext.Default.JsonElement),
+                new DedicatedServerRequestEnvelope(function, data),
+                DedicatedServerJsonContext.Default.DedicatedServerRequestEnvelope),
         };
 
         // Per-FUNCTION retry opt-in: only idempotent functions set AllowRetry so the host resilience
@@ -681,27 +759,6 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient
         }
 
         return message;
-    }
-
-    private static JsonElement BuildEnvelopePayload(string function, JsonElement? data)
-    {
-        using var buffer = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(buffer))
-        {
-            writer.WriteStartObject();
-            writer.WriteString("function", function);
-            if (data is { } d)
-            {
-                writer.WritePropertyName("data");
-                d.WriteTo(writer);
-            }
-
-            writer.WriteEndObject();
-        }
-
-        buffer.Position = 0;
-        using JsonDocument doc = JsonDocument.Parse(buffer);
-        return doc.RootElement.Clone();
     }
 
     private HttpRequestMessage BuildMultipartUpload(UploadSaveGameRequest request, Stream saveGameContent)
@@ -751,12 +808,10 @@ public sealed class DedicatedServerApiClient : IDedicatedServerApiClient
 
     private static JsonElement SerializeToElement<T>(
         T value,
-        System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo)
-    {
-        byte[] utf8 = JsonSerializer.SerializeToUtf8Bytes(value, typeInfo);
-        using JsonDocument doc = JsonDocument.Parse(utf8);
-        return doc.RootElement.Clone();
-    }
+        System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo) =>
+        // SerializeToElement (net10) goes straight value -> JsonElement via the source-gen type info,
+        // with no intermediate MemoryStream/JsonDocument allocation.
+        JsonSerializer.SerializeToElement(value, typeInfo);
 
     private static bool IsJsonResponse(HttpResponseMessage response) =>
         response.Content.Headers.ContentType?.MediaType is "application/json" or "text/json";

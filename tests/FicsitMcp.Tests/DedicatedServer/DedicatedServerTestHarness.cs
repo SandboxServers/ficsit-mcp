@@ -47,7 +47,7 @@ internal static class DedicatedServerTestHarness
         var handler = new RecordingHandler(responder);
         var http = new HttpClient(handler) { BaseAddress = BaseAddress };
         var shell = new SurfaceHttpClient(http, DedicatedServerOptions.SurfaceName);
-        return (new DedicatedServerApiClient(shell, options), handler);
+        return (new DedicatedServerApiClient(() => shell, options), handler);
     }
 
     /// <summary>A success envelope response: <c>{ "data": &lt;json&gt; }</c> with 200.</summary>
@@ -78,6 +78,23 @@ internal static class DedicatedServerTestHarness
             new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
         return response;
     }
+
+    /// <summary>
+    /// A non-JSON, non-binary response (e.g. a <c>text/plain</c> error page from a reverse proxy) at
+    /// the given status, for the download fail-fast path.
+    /// </summary>
+    public static HttpResponseMessage Text(HttpStatusCode status, string body, string mediaType = "text/plain")
+    {
+        var response = new HttpResponseMessage(status)
+        {
+            Content = new StringContent(body, Encoding.UTF8, mediaType),
+        };
+        return response;
+    }
+
+    /// <summary>A 200 with a JSON success envelope but Content-Type <c>application/json</c> (used to
+    /// prove the download path rejects an unexpected JSON success body instead of writing garbage).</summary>
+    public static HttpResponseMessage JsonOk(string json) => Json(HttpStatusCode.OK, json);
 
     private static HttpResponseMessage Json(HttpStatusCode status, string json) =>
         new(status)

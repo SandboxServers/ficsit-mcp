@@ -9,8 +9,9 @@ namespace FicsitMcp.Domain.DedicatedServer;
 /// (<c>POST {BaseUrl}/api/v1</c>, one endpoint, a function-envelope body). This is the single place
 /// the wire protocol lives: envelope shape, bearer auth, 401 re-auth/replay, error-code mapping,
 /// and multipart/streaming framing are all hidden behind these typed methods. Callers (MCP tools)
-/// only ever see records and typed exceptions — never an <c>HttpRequestMessage</c>, header, or
-/// <c>errorCode</c> integer.
+/// only ever see records and typed exceptions — never an <c>HttpRequestMessage</c>, header, or raw
+/// <c>errorCode</c> string (e.g. <c>wrong_password</c>); the string code is carried, already mapped,
+/// on <see cref="DedicatedServerApiException.ErrorCode"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -25,6 +26,39 @@ namespace FicsitMcp.Domain.DedicatedServer;
 /// (e.g. FRM registers <c>frm</c>). The typed methods cover the base game; arbitrary functions go
 /// through <see cref="InvokeRawAsync"/> so #11's FRM-passthrough has a TLS+authenticated path
 /// without bypassing this layer.
+/// </para>
+/// <para>
+/// <b>Idempotency classification.</b> Each function is classified idempotent or not; the client uses
+/// this for two things: (1) whether a 401 mid-flight may be transparently re-authed and replayed, and
+/// (2) whether the request opts into the resilience pipeline's transient-fault retry (see below).
+/// <list type="table">
+///   <listheader><term>Idempotent (re-auth+replay; retried)</term><description>Functions</description></listheader>
+///   <item><term>reads / token checks / logins</term>
+///     <description><see cref="HealthCheckAsync"/>, <see cref="QueryServerStateAsync"/>,
+///     <see cref="GetServerOptionsAsync"/>, <see cref="GetAdvancedGameSettingsAsync"/>,
+///     <see cref="EnumerateSessionsAsync"/>, <see cref="VerifyAuthenticationTokenAsync"/>,
+///     <see cref="PasswordLoginAsync"/>, <see cref="PasswordlessLoginAsync"/>,
+///     <see cref="DownloadSaveGameAsync"/> (binary read).</description></item>
+///   <item><term>NON-idempotent (NO replay; a 401 surfaces
+///     <see cref="DedicatedServerAmbiguousResultException"/>; never retried)</term>
+///     <description><see cref="ClaimServerAsync"/>, <see cref="RenameServerAsync"/>,
+///     <see cref="SetClientPasswordAsync"/>, <see cref="SetAdminPasswordAsync"/>,
+///     <see cref="SetAutoLoadSessionNameAsync"/>, <see cref="ApplyServerOptionsAsync"/>,
+///     <see cref="ApplyAdvancedGameSettingsAsync"/>, <see cref="RunCommandAsync"/>,
+///     <see cref="ShutdownAsync"/>, <see cref="CreateNewGameAsync"/>, <see cref="SaveGameAsync"/>,
+///     <see cref="LoadGameAsync"/>, <see cref="DeleteSaveFileAsync"/>,
+///     <see cref="DeleteSaveSessionAsync"/>, <see cref="UploadSaveGameAsync"/>.</description></item>
+/// </list>
+/// </para>
+/// <para>
+/// <b>Retry interaction with the resilience pipeline.</b> The dedicated-server API is POST-only, so
+/// the host's retry strategy gates on a per-request opt-in rather than HTTP-method safety: the client
+/// sets <see cref="FicsitMcp.Domain.Http.SurfaceHttpRequestOptions.AllowRetry"/> (key
+/// <c>"FicsitMcp.AllowRetry"</c>) on idempotent functions ONLY, and never on a non-idempotent one — a
+/// replayed shutdown/command/save is a real outage. This per-function <c>AllowRetry</c> opt-in (a
+/// transient-transport-fault retry) is distinct from, and orthogonal to, the 401 re-auth+replay above
+/// (an auth retry). <see cref="InvokeRawAsync"/> exposes the same opt-in via its <c>allowRetry</c>
+/// parameter for mod-registered functions.
 /// </para>
 /// </remarks>
 public interface IDedicatedServerApiClient
@@ -158,10 +192,13 @@ public interface IDedicatedServerApiClient
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// <c>DownloadSaveGame</c> — downloads a save as a direct binary response (not a JSON envelope),
-    /// copied to <paramref name="destination"/> in chunks so the whole save is never buffered in
-    /// memory. Idempotent in effect, but POST-only and not retried by default (a partial copy on a
-    /// transient fault is the caller's to re-request). An error is still returned as a JSON envelope.
+    /// <c>DownloadSaveGame</c> — downloads a save as a direct binary response (not a JSON envelope).
+    /// The response is fetched with <c>ResponseHeadersRead</c> and copied to
+    /// <paramref name="destination"/> in chunks, so the whole save is never buffered in memory. This
+    /// is a pure read (idempotent): a 401 with a config token re-auths and replays once, and the
+    /// request opts into the resilience pipeline's retry on transient transport faults. An error is
+    /// still returned as a JSON envelope and surfaced as a typed exception; an unexpected non-binary,
+    /// non-error response fails fast rather than writing a corrupt/empty file.
     /// </summary>
     /// <param name="request">Which save to download.</param>
     /// <param name="destination">Where to stream the bytes; written (not owned) by this call.</param>
