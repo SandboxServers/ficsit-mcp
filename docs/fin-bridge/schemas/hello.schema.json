@@ -31,9 +31,9 @@
     },
     {
       "title": "Hello Response",
-      "description": "Server -> agent acceptance, carrying the timing contract so the agent need not hard-code it.",
+      "description": "Server -> agent acceptance, carrying the timing contract so the agent need not hard-code it. Refusals (e.g. protocol skew) are not this shape; they are typed error responses (HTTP 426).",
       "type": "object",
-      "required": ["protocolVersion", "sessionAccepted"],
+      "required": ["protocolVersion", "sessionAccepted", "serverHoldMs", "agentLivenessMs"],
       "properties": {
         "protocolVersion": {
           "$ref": "common.schema.json#/$defs/protocolVersion"

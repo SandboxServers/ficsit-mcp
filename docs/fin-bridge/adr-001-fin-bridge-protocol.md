@@ -276,14 +276,17 @@ the envelope shape.
  FIN Lua Agent                              MCP Bridge (Kestrel IHostedService)
      |                                                |
      |  POST /fin/v1/hello                            |
-     |  {protocolVersion, agentId, scriptVersion}     |
+     |  {protocolVersion, agentId,                    |
+     |   agentScriptVersion}                          |
      |----------------------------------------------->|  validate token (const-time)
      |                                                |  check protocol version
-     |  200 {protocolVersion, sessionAccepted}        |  register agent, mark ALIVE
+     |  200 {protocolVersion, sessionAccepted,        |  register agent, mark ALIVE
+     |       serverHoldMs, agentLivenessMs}           |
      |<-----------------------------------------------|
      |                                                |
      |  POST /fin/v1/poll                             |
-     |  {protocolVersion, agentId, results:[],        |
+     |  {protocolVersion, agentId,                    |
+     |   agentScriptVersion, results:[],              |
      |   events:[], droppedEvents:0}                  |
      |----------------------------------------------->|  hold up to serverHoldMs
      |                                                |  (await queued command)
@@ -304,6 +307,10 @@ the envelope shape.
      |  200 {commands:[], protocolVersion}            |
      |<-----------------------------------------------|
 ```
+
+The second `poll` body above elides `protocolVersion`, `agentId`, and
+`agentScriptVersion` for brevity; they are required on **every** poll request — see
+`schemas/poll-request.schema.json`.
 
 ## Example exchanges
 

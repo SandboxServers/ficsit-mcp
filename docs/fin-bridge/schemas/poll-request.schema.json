@@ -33,7 +33,7 @@
     },
     "droppedEvents": {
       "title": "Dropped Events (running count)",
-      "description": "Running count of events the agent's drop-oldest ring has discarded since boot. Tells the server telemetry gaps exist even when events looks healthy.",
+      "description": "Running count of events the agent's drop-oldest ring has discarded since boot. Tells the server telemetry gaps exist even when the events array looks healthy.",
       "type": "integer",
       "minimum": 0
     }
