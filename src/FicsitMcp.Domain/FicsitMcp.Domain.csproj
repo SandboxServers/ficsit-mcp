@@ -6,4 +6,14 @@
     the MCP host and transport.
   -->
 
+  <!--
+    The versioned game-data snapshot ships INSIDE the assembly as an embedded resource,
+    so the server works on a machine that has never had Satisfactory installed. Logical
+    name: FicsitMcp.Domain.GameData.game-data.v1.json (default-namespace + path).
+    Regenerate per game release via the documented procedure in GameData/README.md.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="GameData\game-data.v1.json" />
+  </ItemGroup>
+
 </Project>
