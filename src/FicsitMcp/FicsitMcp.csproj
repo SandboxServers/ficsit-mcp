@@ -11,6 +11,16 @@
   <ItemGroup>
     <PackageReference Include="ModelContextProtocol" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" />
+  </ItemGroup>
+
+  <!--
+    The non-web SDK does not auto-include appsettings.json. Copy it next to the host so
+    Host.CreateApplicationBuilder finds it at the content root. Surface secrets are NOT in
+    this file (they come from FICSITMCP_ env vars), so shipping it carries no credentials.
+  -->
+  <ItemGroup>
+    <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

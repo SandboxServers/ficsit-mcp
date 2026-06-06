@@ -15,6 +15,11 @@
          a LOWER direct version triggers a downgrade warning, which is an error
          here because warnings are treated as errors. -->
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.8" />
+
+    <!-- DataAnnotations-based options validation (ValidateDataAnnotations). NOT pulled
+         in by the Hosting metapackage, so it is referenced directly by the host. Kept on
+         the same 10.0.x line as Hosting to avoid a version-skew downgrade warning. -->
+    <PackageVersion Include="Microsoft.Extensions.Options.DataAnnotations" Version="10.0.8" />
   </ItemGroup>
 
   <!-- Test-only dependencies. -->

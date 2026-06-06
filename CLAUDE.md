@@ -12,13 +12,23 @@ Directory.Packages.props     # central package management — all versions live 
 .editorconfig                # style/analyzer rules; every severity override has a why-comment
 src/
   FicsitMcp/                 # console host (Exe). Program.cs = host/transport wiring only
-    Program.cs               #   stderr logging + AddMcpServer().WithStdioServerTransport()
+    Program.cs               #   stderr logging + config + AddMcpServer().WithStdioServerTransport()
+    appsettings.json         #   non-secret defaults; copied to output (PreserveNewest)
+    Configuration/
+      SurfaceOptionsRegistration.cs  # binds+validates the three surfaces (ValidateOnStart)
     Tools/                   #   thin [McpServerToolType] tools that delegate to Domain
       ServerInfoTool.cs      #   placeholder `server_info` tool
   FicsitMcp.Domain/          # Satisfactory domain + surface clients; NO MCP references
     ServerInfo.cs            #   record returned by server_info
     IServerInfoProvider.cs   #   service contract (tools depend on this, not reflection)
     ServerInfoProvider.cs    #   default impl, registered in DI
+    Configuration/           # surface options POCOs + contracts (no MCP, no DI)
+      DedicatedServerOptions.cs  FrmOptions.cs  FinBridgeOptions.cs
+      FrmTransportMode.cs        # Direct | DedicatedApiPassthrough
+      IConfigurableSurface.cs    # SurfaceName / ActivatingEnvVar / IsConfigured contract
+      SurfaceConfigurationExtensions.cs  # .Require() -> actionable error if dormant
+      SurfaceNotConfiguredException.cs
+      Secret.cs Secret*Converter.cs      # redacting credential wrapper (never logs raw)
 tests/
   FicsitMcp.Tests/           # xUnit; references both projects
 ```
@@ -40,6 +50,70 @@ The server speaks MCP over **stdio**, so `stdout` is the JSON-RPC transport. A s
 `Console.WriteLine` (or any log written to stdout) corrupts the stream and shows up to
 clients as a baffling "client disconnected". All logging is routed to **stderr** in
 `Program.cs` via `LogToStandardErrorThreshold = LogLevel.Trace`. Never write to stdout.
+
+## Configuration
+
+The server fans out to up to three independent HTTP surfaces. Each is **independently
+optional**: configure any subset and the rest stay dormant. Settings bind to strongly-typed
+options in `FicsitMcp.Domain/Configuration`, validated with DataAnnotations and
+`ValidateOnStart` (a bad value crashes the host on boot, not on the first tool call).
+
+| Surface | Section | Activating env var | Options type |
+|---|---|---|---|
+| Dedicated Server HTTPS API | `DedicatedServer` | `FICSITMCP_DedicatedServer__BaseUrl` | `DedicatedServerOptions` |
+| Ficsit Remote Monitoring (FRM) | `Frm` | `FICSITMCP_Frm__BaseUrl` | `FrmOptions` |
+| FicsIt-Networks bridge | `FinBridge` | `FICSITMCP_FinBridge__ListenUrl` | `FinBridgeOptions` |
+
+**Config sources & precedence.** `appsettings.json` (non-secret defaults) is the base layer;
+`FICSITMCP_`-prefixed environment variables override it (added last in `Program.cs`). The
+prefix is stripped and `__` is the section delimiter, so `FICSITMCP_Frm__BaseUrl` binds to
+`Frm:BaseUrl`. MCP clients pass config — including secrets — via env vars in their
+`mcpServers` block, which is why env wins.
+
+**Options keys** (env var = `FICSITMCP_<Section>__<Key>`):
+
+- `DedicatedServer`: `BaseUrl` (e.g. `https://127.0.0.1:7777`), `AdminToken` (secret, bearer
+  auth), `DangerousAcceptAnyCert` (bool, **dev only** — skips TLS thumbprint pinning).
+- `Frm`: `BaseUrl` (e.g. `http://127.0.0.1:8080`), `TransportMode` (`Direct` default, or
+  `DedicatedApiPassthrough` to route through the dedicated-server API instead of the FRM port).
+- `FinBridge`: `ListenUrl` (e.g. `http://0.0.0.0:8421`), `SharedSecret` (secret the in-world
+  Lua agent must present).
+
+**Surface-optionality contract.** A surface is *configured* when its activating URL is set.
+A configured-but-incomplete surface (URL set, credential missing) is a validation error; a
+fully-absent surface is a valid opt-out. Tools assert their surface with
+`options.Require()` (`SurfaceConfigurationExtensions`), which throws
+`SurfaceNotConfiguredException` naming the exact env var, e.g.
+`"FRM endpoint not configured; set FICSITMCP_Frm__BaseUrl"`.
+
+**Secrets discipline.** `AdminToken` / `SharedSecret` are typed `Secret`, not `string`:
+`ToString()` returns `***`, and both the JSON and TypeConverter serializers emit the redacted
+form, so logging or echoing an options object cannot leak a credential. Read the raw value
+only via the deliberately blunt `secret.Reveal()` — greppable and obvious in review. Never put
+secrets in `appsettings.json`; pass them through env vars.
+
+### Example MCP client config (Claude Desktop / Code)
+
+```json
+{
+  "mcpServers": {
+    "ficsit-mcp": {
+      "command": "dotnet",
+      "args": ["run", "--project", "/absolute/path/to/ficsit-mcp/src/FicsitMcp"],
+      "env": {
+        "FICSITMCP_DedicatedServer__BaseUrl": "https://127.0.0.1:7777",
+        "FICSITMCP_DedicatedServer__AdminToken": "<admin-api-token>",
+        "FICSITMCP_Frm__BaseUrl": "http://127.0.0.1:8080",
+        "FICSITMCP_Frm__TransportMode": "Direct",
+        "FICSITMCP_FinBridge__ListenUrl": "http://0.0.0.0:8421",
+        "FICSITMCP_FinBridge__SharedSecret": "<bridge-shared-secret>"
+      }
+    }
+  }
+}
+```
+
+Include only the surfaces you use; omit a surface's env vars to leave it dormant.
 
 ## What this is
 
@@ -98,6 +172,10 @@ Claude Desktop (`claude_desktop_config.json`) / Claude Code (`.mcp.json`) block:
   }
 }
 ```
+
+To connect the server to real surfaces, add an `"env"` block with the `FICSITMCP_` vars —
+see the example under [Configuration](#configuration). The block above runs the server with
+every surface dormant.
 
 For a faster launch, publish the host (`dotnet publish src/FicsitMcp -c Release`) and
 point `command` at the produced executable instead of `dotnet run`.
