@@ -10,9 +10,12 @@ namespace FicsitMcp.Domain.FinBridge;
 /// never re-applied.
 /// </summary>
 /// <remarks>
-/// The schema enforces <c>ok ⇒ payload</c> (no error) and <c>!ok ⇒ error</c> (no payload). The host
-/// endpoint layer validates this invariant on ingest; this DTO keeps both nullable so a malformed
-/// body can be inspected and rejected rather than failing to deserialize opaquely.
+/// The schema (<c>result.schema.json</c> <c>allOf</c>) enforces <c>ok ⇒ payload present, error
+/// absent</c> and <c>!ok ⇒ error present, payload absent</c>. <see cref="FinBridge"/> validates this
+/// invariant on ingest (<c>IngestResults</c>): a result that violates it is logged and dropped — never
+/// used to complete a waiter — so a malformed body cannot masquerade as a definitive answer and the
+/// command's deadline still fires with the correct at-most-once outcome. This DTO keeps both nullable
+/// so such a body can be inspected and rejected rather than failing to deserialize opaquely.
 /// </remarks>
 public sealed record FinResult
 {

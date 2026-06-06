@@ -25,12 +25,18 @@ internal static class FinBridgeRegistration
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        // Read the bound-and-normalized options to decide whether to wire anything at all. Binding
-        // here mirrors AddSurfaceOptions so blank/placeholder URLs read as "dormant".
-        var options = new FinBridgeOptions();
-        configuration.GetSection(FinBridgeOptions.SectionName).Bind(options);
+        // Registration gate (G9): a surface is "configured" iff its activating URL is present, so we
+        // gate on ONLY that one value — never on the tunables. A full Bind() of a throwaway options
+        // instance would also bind ServerHoldMs/etc. and could surface a bad-tunable error here,
+        // ahead of (and divergent from) the validated IOptions pipeline that owns validation. Reading
+        // the single key keeps this a presence check; binding + DataAnnotations + ValidateOnStart for
+        // the real options happens in SurfaceOptionsRegistration, and the service asserts the surface
+        // with Require() at start. The chicken-and-egg constraint — we must decide whether to register
+        // BEFORE the options pipeline runs — is why a tiny raw read lives here at all.
+        string? listenUrl = configuration
+            .GetSection(FinBridgeOptions.SectionName)[nameof(FinBridgeOptions.ListenUrl)];
 
-        if (!options.IsConfigured)
+        if (string.IsNullOrWhiteSpace(listenUrl))
         {
             return services;
         }

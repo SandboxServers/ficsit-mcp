@@ -43,9 +43,10 @@ internal sealed class FinBridgeHostedService : IHostedService
     /// <inheritdoc />
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        // Require() turns "bridge listener started but not configured" into one actionable error
-        // naming the exact env var, rather than a null ListenUrl deep in Kestrel binding. The host
-        // only registers this service when configured, so this is a belt-and-braces guard.
+        // Kept (G4): the host only registers this service when configured, so this guard is
+        // belt-and-braces — but it is one cheap line that turns a future mis-wiring (service
+        // registered without its options) into one actionable error naming the exact env var, rather
+        // than a NullReferenceException deep in Kestrel binding. Worth keeping.
         FinBridgeOptions configured = _options.Require();
 
         WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
@@ -75,7 +76,30 @@ internal sealed class FinBridgeHostedService : IHostedService
         app.MapFinBridge();
 
         _app = app;
-        await app.StartAsync(cancellationToken).ConfigureAwait(false);
+
+        // Isolate a bind/startup failure: a port already in use (or any Kestrel startup fault) must
+        // NOT take down the MCP stdio server hosted in the same process — the bridge is one of several
+        // independently-optional surfaces, so a degraded bridge leaves the rest of the host running.
+        // Tools then surface the agent as offline (no agent can reach a listener that never bound).
+        // We deliberately do NOT rethrow: rethrowing from a hosted service's StartAsync aborts the
+        // whole host.
+        try
+        {
+            await app.StartAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogCritical(
+                ex,
+                "FIN bridge failed to start on {ListenUrl} ({Reason}). The bridge is disabled for this " +
+                "run; the rest of the MCP server continues. Check the port is free and the address is " +
+                "bindable, then restart. Configure via {EnvVar}.",
+                configured.ListenUrl, ex.Message, FinBridgeOptions.ActivatingEnvVar);
+
+            await app.DisposeAsync().ConfigureAwait(false);
+            _app = null;
+            return;
+        }
 
         _logger.LogInformation("FIN bridge listening on {ListenUrl}", configured.ListenUrl);
     }

@@ -52,6 +52,11 @@ public sealed class FinBridgeOptions : IConfigurableSurface, IValidatableObject
     /// <c>agentLivenessMs</c>, default 40000 ≈ 1.5× <see cref="ServerHoldMs"/>). A command enqueued
     /// against an agent that has gone silent past this window fails fast with <c>AGENT_OFFLINE</c>
     /// instead of hanging to the command deadline.
+    /// <para>
+    /// Must be strictly greater than <see cref="ServerHoldMs"/> (enforced in <see cref="Validate"/>):
+    /// an agent parked on a healthy long-poll only reports in once per hold, so a liveness window
+    /// shorter than (or equal to) the hold would declare a perfectly healthy agent offline mid-hold.
+    /// </para>
     /// </summary>
     [Range(1, 600_000)]
     public int AgentLivenessMs { get; set; } = 40_000;

@@ -10,14 +10,22 @@ namespace FicsitMcp.Domain.FinBridge;
 
 /// <summary>
 /// Default <see cref="IFinBridge"/>: a long-poll command channel with an at-most-once execution
-/// model. Owns, per agent, a bounded command queue and liveness; globally, the result-correlation
-/// registry (TCS keyed by command id), a tombstone set, and a bounded drop-oldest event ring with
-/// channel fan-out. Time is read through an injected <see cref="TimeProvider"/> so deadlines and
-/// liveness are testable at ~zero wall-clock.
+/// model. Owns, per agent, a bounded command queue, liveness, and a bounded drop-oldest event ring;
+/// globally, the result-correlation registry (TCS keyed by command id), a tombstone set, and the
+/// channel fan-out of events to live subscribers. Time is read through an injected
+/// <see cref="TimeProvider"/> so deadlines and liveness are testable at ~zero wall-clock.
 /// </summary>
 /// <remarks>
+/// <para>
 /// No HTTP or MCP dependency: the host's endpoint layer drives the transport-facing methods and the
-/// machine-control tools drive the tool-facing ones. Thread-safe for concurrent agents and callers.
+/// machine-control tools drive the tool-facing ones.
+/// </para>
+/// <para>
+/// <b>Thread-safety.</b> All members are safe for concurrent use by many agents (poll threads) and
+/// many callers (tool threads) at once. Per-command lifecycle transitions (admit-to-batch, deadline,
+/// cancel, result) are serialized by a per-<see cref="PendingCommand"/> lock so the at-most-once
+/// reconciliation is atomic; the tombstone set and each agent's event ring have their own locks.
+/// </para>
 /// </remarks>
 public sealed class FinBridge : IFinBridge, IDisposable
 {
@@ -28,20 +36,19 @@ public sealed class FinBridge : IFinBridge, IDisposable
     private readonly ConcurrentDictionary<string, AgentState> _agents = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, PendingCommand> _pending = new(StringComparer.Ordinal);
 
-    // Tombstones: ids whose deadline already fired. A result that arrives for one of these is
-    // discarded, never re-applied to a caller who gave up. Bounded by eviction (oldest-first) so the
-    // set cannot grow without limit on a long-running server.
+    // Tombstones: ids whose deadline already fired, or whose caller cancelled. A result that arrives
+    // for one of these is discarded, never re-applied to a caller who gave up; a command re-read from
+    // the channel for one of these is dropped, never delivered. Bounded by oldest-first eviction so
+    // the set cannot grow without limit on a long-running server.
     private readonly object _tombstoneLock = new();
     private readonly LinkedList<string> _tombstoneOrder = [];
     private readonly HashSet<string> _tombstones = new(StringComparer.Ordinal);
-    private const int MaxTombstones = 4096;
 
-    // Event ring + subscriber fan-out. One lock guards both so a subscriber added mid-burst sees a
-    // consistent view.
-    private readonly object _eventLock = new();
-    private readonly Queue<FinEvent> _eventRing = new();
+    // Subscriber fan-out is global (a subscriber sees every agent's events); the event *ring* is
+    // per-agent (see AgentState) so one chatty agent cannot evict another's recent events. One lock
+    // guards the subscriber list so a subscriber added mid-burst sees a consistent view.
+    private readonly object _subscriberLock = new();
     private readonly List<Channel<FinEvent>> _subscribers = [];
-    private long _droppedEvents;
 
     private bool _disposed;
 
@@ -112,18 +119,22 @@ public sealed class FinBridge : IFinBridge, IDisposable
             });
         }
 
-        // Arm the server-side deadline. On fire, complete the waiter with the outcome that reflects
-        // whether the command was ever delivered, and tombstone the id so a late result is dropped.
-        ITimer timer = _timeProvider.CreateTimer(
-            static state => ((PendingCommand)state!).FireDeadline(),
-            pending,
-            TimeSpan.FromMilliseconds(deadlineMs),
-            Timeout.InfiniteTimeSpan);
-        pending.AttachTimer(timer);
+        // Wire the deadline handler BEFORE arming the timer: a very small deadline (or a fake clock
+        // already advanced) could otherwise fire the timer before OnTimeout is attached, making the
+        // timeout a silent no-op and leaving the waiter to hang forever.
         pending.OnTimeout += () => OnCommandDeadline(pending);
+        pending.ArmDeadline(_timeProvider, TimeSpan.FromMilliseconds(deadlineMs));
 
+        // Caller cancellation tombstones the id and completes the waiter as cancelled, so a command
+        // that is later re-read from the channel is dropped (not delivered) and a straggling result
+        // is discarded — cancellation is as binding as a timeout for at-most-once.
         await using CancellationTokenRegistration registration = cancellationToken.Register(
-            static state => ((PendingCommand)state!).Cancel(), pending);
+            static state =>
+            {
+                var ctx = (CancelContext)state!;
+                ctx.Bridge.OnCommandCancelled(ctx.Pending);
+            },
+            new CancelContext(this, pending));
 
         try
         {
@@ -131,40 +142,58 @@ public sealed class FinBridge : IFinBridge, IDisposable
         }
         finally
         {
-            // The waiter is done one way or another; stop tracking it as pending. (If it timed out it
-            // is already tombstoned so a straggling result is still recognised and discarded.)
+            // The waiter is done one way or another; stop tracking it as pending. (If it timed out or
+            // was cancelled it is already tombstoned, so a straggling result or a re-read command is
+            // still recognised and discarded.)
             _pending.TryRemove(toEnqueue.Id, out _);
             pending.Dispose();
         }
     }
 
+    // State captured for the cancellation callback (avoids a closure allocation per registration).
+    private sealed record CancelContext(FinBridge Bridge, PendingCommand Pending);
+
     private void OnCommandDeadline(PendingCommand pending)
     {
-        // If the result (or a cancellation) already completed the waiter, the deadline lost the race:
-        // do nothing, so a command that genuinely succeeded is not tombstoned.
-        if (pending.Completion.Task.IsCompleted)
+        // Resolve the terminal transition under the pending's lock so the delivered-vs-not decision
+        // cannot race the drain loop's admit step. Returns null if the waiter already completed (a
+        // result or cancellation won); in that case the deadline is a no-op and nothing is tombstoned,
+        // so a command that genuinely succeeded is never tombstoned.
+        FinErrorCode? code = pending.TryTimeout();
+        if (code is null)
         {
             return;
         }
 
-        FinErrorCode code = pending.Delivered
-            ? FinErrorCode.DeliveredNoResult
-            : FinErrorCode.QueuedNotPickedUp;
-
-        string message = pending.Delivered
+        string message = code == FinErrorCode.DeliveredNoResult
             ? $"Command '{pending.Id}' was delivered to the agent but no result arrived in time; " +
               "it may have executed. Do not blindly reissue."
             : $"Command '{pending.Id}' was never picked up by the agent before its deadline; " +
               "it almost certainly did not execute.";
 
-        // Tombstone before completing so a result racing in right now is recognised and discarded.
+        // Tombstone so a result racing in right now, or a re-read of the command from the channel, is
+        // recognised and discarded.
         Tombstone(pending.Id);
 
         pending.Completion.TrySetException(new FinBridgeException(new FinError
         {
-            Code = code,
+            Code = code.Value,
             Message = message,
         }));
+    }
+
+    private void OnCommandCancelled(PendingCommand pending)
+    {
+        // Mark the command terminal under its lock; if the deadline or a result already won, this is a
+        // no-op. Tombstone first so a command later re-read from the channel is dropped (not delivered)
+        // and a straggling result is discarded.
+        if (!pending.TryCancel())
+        {
+            return;
+        }
+
+        Tombstone(pending.Id);
+        pending.Completion.TrySetCanceled();
     }
 
     /// <inheritdoc />
@@ -174,7 +203,7 @@ public sealed class FinBridge : IFinBridge, IDisposable
 
         if (!_agents.TryGetValue(agentId, out AgentState? agent))
         {
-            return new AgentLiveness(agentId, IsAlive: false, LastSeen: default, AgentScriptVersion: null);
+            return new AgentLiveness(agentId, IsAlive: false, LastSeen: default, AgentScriptVersion: null, DroppedEvents: 0);
         }
 
         return agent.Snapshot(_timeProvider.GetUtcNow(), _options.AgentLivenessMs);
@@ -190,10 +219,15 @@ public sealed class FinBridge : IFinBridge, IDisposable
     /// <inheritdoc />
     public IReadOnlyList<FinEvent> RecentEvents()
     {
-        lock (_eventLock)
-        {
-            return [.. _eventRing];
-        }
+        // Merge each agent's per-agent ring, ordered by server-stamped receipt time (the authoritative
+        // order; the agent clock is never trusted). Per-agent rings mean a chatty agent cannot evict
+        // another agent's recent events.
+        return
+        [
+            .. _agents.Values
+                .SelectMany(a => a.SnapshotEvents())
+                .OrderBy(e => e.ReceivedAt)
+        ];
     }
 
     /// <inheritdoc />
@@ -208,7 +242,7 @@ public sealed class FinBridge : IFinBridge, IDisposable
             SingleWriter = false,
         });
 
-        lock (_eventLock)
+        lock (_subscriberLock)
         {
             _subscribers.Add(channel);
         }
@@ -219,7 +253,7 @@ public sealed class FinBridge : IFinBridge, IDisposable
 
     private void Unsubscribe(Channel<FinEvent> channel)
     {
-        lock (_eventLock)
+        lock (_subscriberLock)
         {
             _subscribers.Remove(channel);
         }
@@ -261,7 +295,7 @@ public sealed class FinBridge : IFinBridge, IDisposable
         agent.MarkSeen(_timeProvider.GetUtcNow(), poll.AgentScriptVersion);
 
         IngestResults(poll.Results);
-        IngestEvents(poll.AgentId, poll.Events);
+        IngestEvents(agent, poll.Events);
         agent.ReportedDroppedEvents = poll.DroppedEvents;
 
         IReadOnlyList<FinCommand> commands = await DrainCommandsAsync(agent, cancellationToken).ConfigureAwait(false);
@@ -283,28 +317,52 @@ public sealed class FinBridge : IFinBridge, IDisposable
                 continue;
             }
 
-            // A result for a tombstoned id is a straggler that arrived after the caller gave up:
-            // recognise and discard it, never re-apply.
-            if (IsTombstoned(result.Id))
+            // Enforce the result invariant the schema's allOf defines (ok => payload, no error;
+            // !ok => error, no payload). A malformed result is rejected outright — never used to
+            // complete a waiter — so the deadline still fires with the correct at-most-once outcome
+            // (DELIVERED_NO_RESULT for a delivered command) rather than a caller acting on a body the
+            // contract forbids. Dropping (vs. failing the waiter with a typed error) is the safer
+            // choice: a malformed body is indistinguishable from a buggy/compromised agent, and we
+            // must not let it masquerade as a definitive "did/did not happen" answer.
+            if (!IsResultInvariantValid(result))
             {
-                _logger.LogDebug("Discarding result for tombstoned command {CommandId}", result.Id);
+                _logger.LogWarning(
+                    "Discarding malformed FIN result for command {CommandId}: ok={Ok} but payload/error " +
+                    "do not satisfy the result invariant", result.Id, result.Ok);
                 continue;
             }
 
-            if (_pending.TryGetValue(result.Id, out PendingCommand? pending))
+            // Complete the waiter FIRST: TaskCompletionSource completion is atomic and first-writer-
+            // wins, so an in-time result that races the deadline timer cannot be lost. The tombstone
+            // check below is only for classifying/logging a *late* straggler, never a gate before
+            // completion.
+            if (_pending.TryGetValue(result.Id, out PendingCommand? pending) && pending.TryComplete(result))
             {
-                pending.Completion.TrySetResult(result);
+                continue;
+            }
+
+            // We did not complete a waiter. Either it was already terminal (timed out/cancelled — the
+            // result lost the race and the id is tombstoned) or there was never a waiter (e.g. an agent
+            // restart replaying state). Distinguish for logging only.
+            if (IsTombstoned(result.Id))
+            {
+                _logger.LogDebug("Discarding result for tombstoned command {CommandId} (deadline/cancel won the race)", result.Id);
             }
             else
             {
-                // No waiter and not tombstoned: a result for a command we never tracked (e.g. agent
-                // restart replaying state). Nothing safe to do but log it.
                 _logger.LogDebug("Discarding result for unknown command {CommandId}", result.Id);
             }
         }
     }
 
-    private void IngestEvents(string agentId, IReadOnlyList<FinEvent> events)
+    // The result invariant from result.schema.json: ok=true requires a payload and forbids an error;
+    // ok=false requires an error and forbids a payload.
+    private static bool IsResultInvariantValid(FinResult result)
+        => result.Ok
+            ? result.Payload is not null && result.Error is null
+            : result.Error is not null && result.Payload is null;
+
+    private void IngestEvents(AgentState agent, IReadOnlyList<FinEvent> events)
     {
         if (events.Count == 0)
         {
@@ -313,24 +371,24 @@ public sealed class FinBridge : IFinBridge, IDisposable
 
         DateTimeOffset now = _timeProvider.GetUtcNow();
 
-        lock (_eventLock)
+        // Stamp authoritative receivedAt + agentId (the agent clock is advisory), append to this
+        // agent's own ring (drop-oldest, per-agent cap), then fan out to global subscribers.
+        FinEvent[] stamped = new FinEvent[events.Count];
+        for (int i = 0; i < events.Count; i++)
         {
-            foreach (FinEvent raw in events)
+            stamped[i] = events[i] with { ReceivedAt = now, AgentId = agent.AgentId };
+        }
+
+        agent.AppendEvents(stamped, _options.MaxBufferedEvents);
+
+        lock (_subscriberLock)
+        {
+            foreach (FinEvent ev in stamped)
             {
-                // The server stamps authoritative receivedAt + agentId; the agent clock is advisory.
-                FinEvent stamped = raw with { ReceivedAt = now, AgentId = agentId };
-
-                _eventRing.Enqueue(stamped);
-                while (_eventRing.Count > _options.MaxBufferedEvents)
-                {
-                    _eventRing.Dequeue();
-                    _droppedEvents++;
-                }
-
                 foreach (Channel<FinEvent> subscriber in _subscribers)
                 {
                     // Drop-oldest channels never block; ignore the (always-true unless completed) result.
-                    subscriber.Writer.TryWrite(stamped);
+                    subscriber.Writer.TryWrite(ev);
                 }
             }
         }
@@ -340,48 +398,83 @@ public sealed class FinBridge : IFinBridge, IDisposable
     {
         ChannelReader<FinCommand> reader = agent.CommandQueue.Reader;
 
-        // Hold the poll open up to ServerHoldMs waiting for the first command, so a healthy idle
-        // agent makes near-zero request volume. The hold is bounded by the timer source so it is
-        // testable at ~zero wall-clock.
-        using var holdCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        // Hold the poll open up to ServerHoldMs waiting for the first deliverable command, so a healthy
+        // idle agent makes near-zero request volume. The hold uses a TimeProvider-backed
+        // CancellationTokenSource whose internal timer disposes safely (no manual ITimer whose callback
+        // could race its own Dispose, the old hold-timer CTS dispose race), linked with the caller's
+        // token. Reading time through the injected TimeProvider keeps the hold testable at ~zero
+        // wall-clock.
+        using var holdTimerCts = new CancellationTokenSource(
+            TimeSpan.FromMilliseconds(_options.ServerHoldMs), _timeProvider);
+        using var holdCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, holdTimerCts.Token);
 
-        FinCommand? first;
+        var batch = new List<FinCommand>();
+
+        // Read commands until we have a deliverable one (or the hold expires). A command whose id is
+        // tombstoned or no longer pending (timed out, cancelled, or already completed) is skipped and
+        // logged — never delivered — closing the stale-delivery hole. We keep reading past skipped
+        // commands within the same hold so a single dead command does not waste the whole long-poll.
         try
         {
-            using ITimer holdTimer = _timeProvider.CreateTimer(
-                static state => ((CancellationTokenSource)state!).Cancel(),
-                holdCts,
-                TimeSpan.FromMilliseconds(_options.ServerHoldMs),
-                Timeout.InfiniteTimeSpan);
+            while (batch.Count < MaxCommandsPerWake)
+            {
+                FinCommand command;
+                if (batch.Count == 0)
+                {
+                    // Block (up to the hold) for the first deliverable command.
+                    command = await reader.ReadAsync(holdCts.Token).ConfigureAwait(false);
+                }
+                else if (!reader.TryRead(out command!))
+                {
+                    // No more already-queued commands; ship what we have rather than re-blocking.
+                    break;
+                }
 
-            first = await reader.ReadAsync(holdCts.Token).ConfigureAwait(false);
+                if (TryAdmit(command))
+                {
+                    batch.Add(command);
+                }
+            }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            // Hold expired with nothing queued: return an empty command list (a normal long-poll).
-            return [];
-        }
-
-        var batch = new List<FinCommand> { first };
-
-        // Drain any further commands already queued, but never more than one wake's worth, so a flood
-        // cannot starve the agent's game-thread tick budget.
-        while (batch.Count < MaxCommandsPerWake && reader.TryRead(out FinCommand? next))
-        {
-            batch.Add(next);
-        }
-
-        // Mark each delivered command so a later no-result timeout reports DELIVERED_NO_RESULT
-        // (may-have-executed) rather than QUEUED_NOT_PICKED_UP (did-not-execute).
-        foreach (FinCommand command in batch)
-        {
-            if (_pending.TryGetValue(command.Id, out PendingCommand? pending))
-            {
-                pending.MarkDelivered();
-            }
+            // Hold expired with nothing deliverable queued: return whatever (possibly empty) batch we
+            // accumulated. A normal long-poll.
         }
 
         return batch;
+    }
+
+    /// <summary>
+    /// Decides whether a command pulled from the queue may be delivered, and atomically marks it
+    /// delivered if so. A command whose waiter is already terminal (timed out, cancelled, or
+    /// completed) or whose id is tombstoned is NOT delivered — this is the guard the deadline path
+    /// consults, so a command admitted here can only ever time out as DELIVERED_NO_RESULT, never
+    /// QUEUED_NOT_PICKED_UP.
+    /// </summary>
+    private bool TryAdmit(FinCommand command)
+    {
+        if (IsTombstoned(command.Id))
+        {
+            _logger.LogDebug("Skipping delivery of tombstoned command {CommandId}", command.Id);
+            return false;
+        }
+
+        if (!_pending.TryGetValue(command.Id, out PendingCommand? pending))
+        {
+            // No waiter: the caller already gave up (removed in SendAsync's finally) before the agent
+            // pulled it. Nothing to deliver to.
+            _logger.LogDebug("Skipping delivery of command {CommandId} with no live waiter", command.Id);
+            return false;
+        }
+
+        if (!pending.TryMarkDelivered())
+        {
+            _logger.LogDebug("Skipping delivery of already-terminal command {CommandId}", command.Id);
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -417,6 +510,13 @@ public sealed class FinBridge : IFinBridge, IDisposable
             }
 
             _tombstoneOrder.AddLast(id);
+
+            // Oldest-first eviction caps the set. MaxTombstones is fixed (not an operator knob)
+            // because it is a memory/safety trade-off, not a behavioural tuning point: at 4096 ids a
+            // ~26-byte ULID costs ~100 KB worst case, far more than the in-flight window of even a
+            // busy operator, while still bounding a multi-day uptime. A late result for an id evicted
+            // this long after its deadline is treated as "unknown command" and dropped anyway, so the
+            // only risk of too-small a cap is a noisier log line, never a re-applied mutation.
             while (_tombstoneOrder.Count > MaxTombstones)
             {
                 string oldest = _tombstoneOrder.First!.Value;
@@ -425,6 +525,8 @@ public sealed class FinBridge : IFinBridge, IDisposable
             }
         }
     }
+
+    private const int MaxTombstones = 4096;
 
     private bool IsTombstoned(string id)
     {
@@ -444,12 +546,25 @@ public sealed class FinBridge : IFinBridge, IDisposable
 
         _disposed = true;
 
+        // Fail every outstanding waiter with a typed shutdown error so a caller parked on SendAsync
+        // does not hang past host shutdown. Tombstone each id so a result that arrives during the
+        // shutdown window is still recognised and discarded (at-most-once survives shutdown).
         foreach (PendingCommand pending in _pending.Values)
         {
+            if (pending.TryShutdown())
+            {
+                Tombstone(pending.Id);
+                pending.Completion.TrySetException(new FinBridgeException(new FinError
+                {
+                    Code = FinErrorCode.OperationFailed,
+                    Message = "FIN bridge is shutting down; the command's result will not be awaited.",
+                }));
+            }
+
             pending.Dispose();
         }
 
-        lock (_eventLock)
+        lock (_subscriberLock)
         {
             foreach (Channel<FinEvent> subscriber in _subscribers)
             {
@@ -460,9 +575,13 @@ public sealed class FinBridge : IFinBridge, IDisposable
         }
     }
 
-    /// <summary>Per-agent state: a bounded reject-on-full command queue plus liveness.</summary>
+    /// <summary>Per-agent state: a bounded reject-on-full command queue, liveness, and an event ring.</summary>
     private sealed class AgentState
     {
+        private readonly object _ringLock = new();
+        private readonly Queue<FinEvent> _eventRing = new();
+        private long _droppedEvents;
+
         public AgentState(string agentId, int maxQueuedCommands = 64)
         {
             AgentId = agentId;
@@ -479,6 +598,7 @@ public sealed class FinBridge : IFinBridge, IDisposable
 
         public Channel<FinCommand> CommandQueue { get; }
 
+        /// <summary>The agent's self-reported running dropped count (its own ring), advisory.</summary>
         public long ReportedDroppedEvents { get; set; }
 
         private long _lastSeenUtcTicks;
@@ -493,23 +613,63 @@ public sealed class FinBridge : IFinBridge, IDisposable
             }
         }
 
+        /// <summary>Appends stamped events to this agent's ring, evicting oldest past the cap.</summary>
+        public void AppendEvents(IReadOnlyList<FinEvent> stamped, int maxBufferedEvents)
+        {
+            lock (_ringLock)
+            {
+                foreach (FinEvent ev in stamped)
+                {
+                    _eventRing.Enqueue(ev);
+                    while (_eventRing.Count > maxBufferedEvents)
+                    {
+                        _eventRing.Dequeue();
+                        _droppedEvents++;
+                    }
+                }
+            }
+        }
+
+        /// <summary>A point-in-time copy of this agent's ring (oldest-first).</summary>
+        public IReadOnlyList<FinEvent> SnapshotEvents()
+        {
+            lock (_ringLock)
+            {
+                return [.. _eventRing];
+            }
+        }
+
         public AgentLiveness Snapshot(DateTimeOffset now, int livenessMs)
         {
             long lastSeenTicks = Interlocked.Read(ref _lastSeenUtcTicks);
             var lastSeen = new DateTimeOffset(lastSeenTicks, TimeSpan.Zero);
             bool alive = lastSeenTicks != 0 && (now - lastSeen) <= TimeSpan.FromMilliseconds(livenessMs);
-            return new AgentLiveness(AgentId, alive, lastSeen, Volatile.Read(ref _agentScriptVersion));
+            long dropped = Interlocked.Read(ref _droppedEvents);
+            return new AgentLiveness(AgentId, alive, lastSeen, Volatile.Read(ref _agentScriptVersion), dropped);
         }
     }
 
     /// <summary>
-    /// One in-flight command's correlation state: the waiter TCS, a delivered flag, and the deadline
-    /// timer. The TCS uses run-continuations-asynchronously so completing it from a timer callback or
-    /// an ingest path never inlines arbitrary continuation work on that thread.
+    /// One in-flight command's correlation state: the waiter TCS, a small lifecycle state machine, and
+    /// the deadline timer. All transitions go through <see cref="_lock"/> so admit-to-batch, deadline,
+    /// cancel, and result completion are mutually exclusive — the heart of at-most-once reconciliation.
+    /// The TCS uses run-continuations-asynchronously so completing it from a timer callback or an
+    /// ingest path never inlines arbitrary continuation work on that thread.
     /// </summary>
     private sealed class PendingCommand : IDisposable
     {
-        private int _delivered;
+        private enum LifeState
+        {
+            Pending,
+            Delivered,
+            Completed,
+            TimedOut,
+            Cancelled,
+            ShutDown,
+        }
+
+        private readonly object _lock = new();
+        private LifeState _state = LifeState.Pending;
         private ITimer? _timer;
 
         public PendingCommand(string id) => Id = id;
@@ -519,18 +679,114 @@ public sealed class FinBridge : IFinBridge, IDisposable
         public TaskCompletionSource<FinResult> Completion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public bool Delivered => Volatile.Read(ref _delivered) == 1;
-
         /// <summary>Raised when the deadline timer fires, on the timer thread.</summary>
         public event Action? OnTimeout;
 
-        public void AttachTimer(ITimer timer) => _timer = timer;
+        /// <summary>Arms the deadline timer. Call only AFTER <see cref="OnTimeout"/> is wired.</summary>
+        public void ArmDeadline(TimeProvider timeProvider, TimeSpan deadline)
+            => _timer = timeProvider.CreateTimer(
+                static state => ((PendingCommand)state!).OnTimeout?.Invoke(),
+                this,
+                deadline,
+                Timeout.InfiniteTimeSpan);
 
-        public void MarkDelivered() => Interlocked.Exchange(ref _delivered, 1);
+        private bool IsTerminal => _state is LifeState.Completed or LifeState.TimedOut or LifeState.Cancelled or LifeState.ShutDown;
 
-        public void FireDeadline() => OnTimeout?.Invoke();
+        /// <summary>
+        /// Marks the command delivered to the agent if it is still admissible (Pending or already
+        /// Delivered). Returns false if it has reached a terminal state, so a tombstoned/timed-out/
+        /// cancelled command is never delivered.
+        /// </summary>
+        public bool TryMarkDelivered()
+        {
+            lock (_lock)
+            {
+                if (IsTerminal)
+                {
+                    return false;
+                }
 
-        public void Cancel() => Completion.TrySetCanceled();
+                _state = LifeState.Delivered;
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// Completes the waiter with a result if it is not already terminal. Returns true if this call
+        /// completed it. TrySetResult itself is atomic; the lock keeps <see cref="_state"/> consistent
+        /// with the other transitions.
+        /// </summary>
+        public bool TryComplete(FinResult result)
+        {
+            lock (_lock)
+            {
+                if (IsTerminal)
+                {
+                    return false;
+                }
+
+                if (!Completion.TrySetResult(result))
+                {
+                    return false;
+                }
+
+                _state = LifeState.Completed;
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// Transitions to TimedOut if not already terminal, returning the at-most-once outcome code
+        /// (DELIVERED_NO_RESULT if it had been delivered, else QUEUED_NOT_PICKED_UP). Returns null if
+        /// the waiter already completed (a result or cancellation won the race) — the caller then does
+        /// nothing, so a succeeded command is never tombstoned.
+        /// </summary>
+        public FinErrorCode? TryTimeout()
+        {
+            lock (_lock)
+            {
+                if (IsTerminal)
+                {
+                    return null;
+                }
+
+                FinErrorCode code = _state == LifeState.Delivered
+                    ? FinErrorCode.DeliveredNoResult
+                    : FinErrorCode.QueuedNotPickedUp;
+                _state = LifeState.TimedOut;
+                return code;
+            }
+        }
+
+        /// <summary>Transitions to Cancelled if not already terminal; returns whether this won.</summary>
+        public bool TryCancel()
+        {
+            lock (_lock)
+            {
+                if (IsTerminal)
+                {
+                    return false;
+                }
+
+                _state = LifeState.Cancelled;
+                return true;
+            }
+        }
+
+        /// <summary>Transitions to ShutDown if not already terminal; returns whether this won.</summary>
+        public bool TryShutdown()
+        {
+            lock (_lock)
+            {
+                if (IsTerminal)
+                {
+                    return false;
+                }
+
+                _state = LifeState.ShutDown;
+                return true;
+            }
+        }
 
         public void Dispose() => _timer?.Dispose();
     }

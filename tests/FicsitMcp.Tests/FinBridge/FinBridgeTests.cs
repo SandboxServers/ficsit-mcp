@@ -55,6 +55,27 @@ public sealed class FinBridgeTests
         DeadlineMs = deadlineMs,
     };
 
+    // A schema-valid success result: ok=true REQUIRES a (object) payload and forbids an error
+    // (result.schema.json allOf). Tests must build valid results so the ingest-time invariant check
+    // does not (correctly) drop them.
+    private static FinResult OkResult(string id) => new()
+    {
+        Id = id,
+        Ok = true,
+        Payload = System.Text.Json.JsonSerializer.SerializeToElement(new
+        {
+            before = new { standby = true },
+            after = new { standby = false },
+        }),
+    };
+
+    private static FinResult ErrorResult(string id, FinErrorCode code = FinErrorCode.OperationFailed) => new()
+    {
+        Id = id,
+        Ok = false,
+        Error = new FinError { Code = code, Message = "in-world failure" },
+    };
+
     private static PollRequest Poll(params FinResult[] results) => new()
     {
         ProtocolVersion = FinProtocol.Version,
@@ -122,7 +143,7 @@ public sealed class FinBridgeTests
 
         // The agent executes and reports the result on the next poll. That poll ingests the result
         // (completing the waiter) before holding for more commands; release the hold so it returns.
-        await PollAndReleaseAsync(bridge, time, options, new FinResult { Id = "cmd-1", Ok = true });
+        await PollAndReleaseAsync(bridge, time, options, OkResult("cmd-1"));
 
         FinResult roundTripped = await send;
         Assert.True(roundTripped.Ok);
@@ -236,8 +257,306 @@ public sealed class FinBridgeTests
 
         // A straggling result arrives after the caller gave up; must be silently discarded and must
         // not throw or resurface to anyone.
-        PollResponse after = await PollAndReleaseAsync(bridge, time, options, new FinResult { Id = "cmd-1", Ok = true });
+        PollResponse after = await PollAndReleaseAsync(bridge, time, options, OkResult("cmd-1"));
         Assert.Empty(after.Commands);
+    }
+
+    [Fact]
+    public async Task TimedOutCommand_IsNotRedelivered_OnALaterPoll()
+    {
+        // Regression (MUST-FIX 1): a command that timed out (and was tombstoned) before the agent
+        // pulled it must be SKIPPED by the drain loop, never delivered and executed after the caller
+        // was told it almost certainly did not run.
+        var time = new FakeTimeProvider();
+        FinBridgeOptions options = CreateOptions(o => o.AgentLivenessMs = 100_000);
+        using Domain.FinBridge.FinBridge bridge = CreateBridge(time, options);
+        bridge.HelloAsync(Hello());
+
+        Task<FinResult> send = bridge.SendAsync(AgentId, Command("cmd-1", deadlineMs: 5_000));
+
+        // Never picked up; deadline fires and tombstones it.
+        time.Advance(TimeSpan.FromMilliseconds(5_001));
+        FinBridgeException ex = await Assert.ThrowsAsync<FinBridgeException>(() => send);
+        Assert.Equal(FinErrorCode.QueuedNotPickedUp, ex.Code);
+
+        // The agent finally polls. The tombstoned command must NOT be delivered.
+        PollResponse response = await PollAndReleaseAsync(bridge, time, options);
+        Assert.Empty(response.Commands);
+    }
+
+    [Fact]
+    public async Task CancelledCommand_IsNotRedelivered_OnALaterPoll()
+    {
+        // Regression (MUST-FIX 1b): caller cancellation tombstones the id, so a command cancelled
+        // before pickup can never execute later.
+        var time = new FakeTimeProvider();
+        FinBridgeOptions options = CreateOptions(o => o.AgentLivenessMs = 100_000);
+        using Domain.FinBridge.FinBridge bridge = CreateBridge(time, options);
+        bridge.HelloAsync(Hello());
+
+        using var cts = new CancellationTokenSource();
+        Task<FinResult> send = bridge.SendAsync(AgentId, Command("cmd-1", deadlineMs: 60_000), cts.Token);
+
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => send);
+
+        // A poll after the cancellation must not hand the agent the cancelled command.
+        PollResponse response = await PollAndReleaseAsync(bridge, time, options);
+        Assert.Empty(response.Commands);
+    }
+
+    [Fact]
+    public async Task InTimeResult_WinsOverDeadline_WhenBothAreEligible()
+    {
+        // Regression (MUST-FIX 2): a result that arrives in time must complete the waiter even though
+        // the deadline is about to fire. IngestResults completes the TCS first (atomic, first-writer-
+        // wins); the deadline firing afterward sees a completed waiter and is a no-op — the caller
+        // gets the result, not a timeout.
+        var time = new FakeTimeProvider();
+        FinBridgeOptions options = CreateOptions(o => o.AgentLivenessMs = 100_000);
+        using Domain.FinBridge.FinBridge bridge = CreateBridge(time, options);
+        bridge.HelloAsync(Hello());
+
+        Task<FinResult> send = bridge.SendAsync(AgentId, Command("cmd-1", deadlineMs: 5_000));
+        await bridge.PollAsync(Poll()); // deliver
+
+        // The result is ingested (completing the waiter) at t < deadline...
+        await PollAndReleaseAsync(bridge, time, options, OkResult("cmd-1"));
+
+        // ...then time crosses the deadline. The waiter is already completed with the result.
+        time.Advance(TimeSpan.FromMilliseconds(5_001));
+
+        FinResult result = await send;
+        Assert.True(result.Ok);
+        Assert.Equal("cmd-1", result.Id);
+    }
+
+    [Fact]
+    public async Task MalformedResult_IsRejected_AndTheDeadlineStillFires()
+    {
+        // Regression (MUST-FIX 4): an ok=true result with no payload violates the schema invariant.
+        // It must be dropped (never used to complete the waiter), so the command's deadline still
+        // fires with the correct DELIVERED_NO_RESULT outcome rather than a malformed "success".
+        var time = new FakeTimeProvider();
+        FinBridgeOptions options = CreateOptions(o => o.AgentLivenessMs = 100_000);
+        using Domain.FinBridge.FinBridge bridge = CreateBridge(time, options);
+        bridge.HelloAsync(Hello());
+
+        Task<FinResult> send = bridge.SendAsync(AgentId, Command("cmd-1", deadlineMs: 5_000));
+        await bridge.PollAsync(Poll()); // deliver
+
+        // A malformed result: ok=true but no payload. Must be discarded.
+        await PollAndReleaseAsync(bridge, time, options, new FinResult { Id = "cmd-1", Ok = true });
+
+        // The waiter is NOT completed by the malformed body; the deadline fires.
+        time.Advance(TimeSpan.FromMilliseconds(5_001));
+
+        FinBridgeException ex = await Assert.ThrowsAsync<FinBridgeException>(() => send);
+        Assert.Equal(FinErrorCode.DeliveredNoResult, ex.Code);
+    }
+
+    [Fact]
+    public async Task MalformedErrorResult_OkFalseWithPayload_IsRejected()
+    {
+        // The other half of the invariant: ok=false must carry an error and no payload.
+        var time = new FakeTimeProvider();
+        FinBridgeOptions options = CreateOptions(o => o.AgentLivenessMs = 100_000);
+        using Domain.FinBridge.FinBridge bridge = CreateBridge(time, options);
+        bridge.HelloAsync(Hello());
+
+        Task<FinResult> send = bridge.SendAsync(AgentId, Command("cmd-1", deadlineMs: 5_000));
+        await bridge.PollAsync(Poll());
+
+        FinResult malformed = new()
+        {
+            Id = "cmd-1",
+            Ok = false,
+            Payload = System.Text.Json.JsonSerializer.SerializeToElement(new { whoops = true }),
+        };
+        await PollAndReleaseAsync(bridge, time, options, malformed);
+
+        time.Advance(TimeSpan.FromMilliseconds(5_001));
+        FinBridgeException ex = await Assert.ThrowsAsync<FinBridgeException>(() => send);
+        Assert.Equal(FinErrorCode.DeliveredNoResult, ex.Code);
+    }
+
+    [Fact]
+    public async Task WellFormedErrorResult_CompletesTheWaiter()
+    {
+        // An ok=false result WITH an error (and no payload) is valid and must complete the waiter.
+        var time = new FakeTimeProvider();
+        FinBridgeOptions options = CreateOptions(o => o.AgentLivenessMs = 100_000);
+        using Domain.FinBridge.FinBridge bridge = CreateBridge(time, options);
+        bridge.HelloAsync(Hello());
+
+        Task<FinResult> send = bridge.SendAsync(AgentId, Command("cmd-1", deadlineMs: 60_000));
+        await bridge.PollAsync(Poll());
+
+        await PollAndReleaseAsync(bridge, time, options, ErrorResult("cmd-1", FinErrorCode.AmbiguousTarget));
+
+        FinResult result = await send;
+        Assert.False(result.Ok);
+        Assert.NotNull(result.Error);
+        Assert.Equal(FinErrorCode.AmbiguousTarget, result.Error!.Code);
+    }
+
+    [Fact]
+    public async Task Dispose_FailsOutstandingWaiters_WithShutdownError()
+    {
+        // Regression (MUST-FIX 5): a caller parked on SendAsync must not hang past host shutdown.
+        var time = new FakeTimeProvider();
+        var bridge = CreateBridge(time, o => o.AgentLivenessMs = 100_000);
+        bridge.HelloAsync(Hello());
+
+        Task<FinResult> send = bridge.SendAsync(AgentId, Command("cmd-1", deadlineMs: 600_000));
+
+        bridge.Dispose();
+
+        FinBridgeException ex = await Assert.ThrowsAsync<FinBridgeException>(() => send);
+        Assert.Equal(FinErrorCode.OperationFailed, ex.Code);
+        Assert.Contains("shutting down", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task EventRing_IsPerAgent_OneChattyAgentDoesNotEvictAnother()
+    {
+        // Regression (MUST-FIX 6): rings are per-agent. A storm on agent B must not evict agent A's
+        // recent events, and the merged RecentEvents() view contains both.
+        const string AgentA = "agent-a";
+        const string AgentB = "agent-b";
+
+        var time = new FakeTimeProvider();
+        FinBridgeOptions options = CreateOptions(o =>
+        {
+            o.MaxBufferedEvents = 3;
+            o.AgentLivenessMs = 100_000;
+        });
+        using Domain.FinBridge.FinBridge bridge = CreateBridge(time, options);
+
+        bridge.HelloAsync(Hello() with { AgentId = AgentA });
+        bridge.HelloAsync(Hello() with { AgentId = AgentB });
+
+        // Agent A reports one event.
+        await PollAgentWithEventsAsync(bridge, time, options, AgentA,
+            new FinEvent { Seq = 1, Signal = "PowerFuseChanged", Source = new ComponentRef { Id = "a-fuse" } });
+
+        // Agent B storms past its own cap (5 > cap 3).
+        FinEvent[] storm = [.. Enumerable.Range(1, 5).Select(i => new FinEvent
+        {
+            Seq = i,
+            Signal = "ItemTransfer",
+            Source = new ComponentRef { Id = $"b-belt-{i}" },
+        })];
+        await PollAgentWithEventsAsync(bridge, time, options, AgentB, storm);
+
+        IReadOnlyList<FinEvent> recent = bridge.RecentEvents();
+
+        // Agent A's lone event survives (a global ring would have evicted it under B's storm).
+        Assert.Contains(recent, e => e.AgentId == AgentA && e.Signal == "PowerFuseChanged");
+        // Agent B kept exactly its cap (3), dropping its 2 oldest.
+        Assert.Equal(3, recent.Count(e => e.AgentId == AgentB));
+
+        // The per-agent dropped count is exposed for #21.
+        Assert.Equal(0, bridge.GetLiveness(AgentA).DroppedEvents);
+        Assert.Equal(2, bridge.GetLiveness(AgentB).DroppedEvents);
+    }
+
+    [Fact]
+    public async Task PollAsync_CancellationMidHold_ReturnsControl_WithoutAnEmptyResponse()
+    {
+        // G12: a caller (agent disconnect / host stopping) cancelling mid-hold cancels the await.
+        var time = new FakeTimeProvider();
+        using Domain.FinBridge.FinBridge bridge = CreateBridge(time, o => o.AgentLivenessMs = 100_000);
+        bridge.HelloAsync(Hello());
+
+        using var cts = new CancellationTokenSource();
+        Task<PollResponse> poll = bridge.PollAsync(Poll(), cts.Token);
+        Assert.False(poll.IsCompleted); // held open
+
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => poll);
+    }
+
+    [Fact]
+    public async Task MultipleSubscribers_EachReceiveTheSameEvent()
+    {
+        // G13: fan-out reaches every live subscriber.
+        var time = new FakeTimeProvider();
+        FinBridgeOptions options = CreateOptions(o => o.AgentLivenessMs = 100_000);
+        using Domain.FinBridge.FinBridge bridge = CreateBridge(time, options);
+        bridge.HelloAsync(Hello());
+
+        using IDisposable s1 = bridge.Subscribe(out ChannelReader<FinEvent> r1);
+        using IDisposable s2 = bridge.Subscribe(out ChannelReader<FinEvent> r2);
+
+        await PollWithEventsAsync(bridge, time, options,
+            new FinEvent { Seq = 1, Signal = "ProductionChanged", Source = new ComponentRef { Id = "c-7" } });
+
+        FinEvent e1 = await r1.ReadAsync();
+        FinEvent e2 = await r2.ReadAsync();
+        Assert.Equal("ProductionChanged", e1.Signal);
+        Assert.Equal("ProductionChanged", e2.Signal);
+    }
+
+    [Fact]
+    public async Task Tombstones_EvictOldest_PastTheCap()
+    {
+        // G10: the tombstone set is bounded; the oldest tombstone is evicted once the cap is exceeded,
+        // after which a late result for that very old id is treated as "unknown" and still dropped
+        // (never re-applied). We assert the bridge stays healthy and keeps discarding old results
+        // across far more than the cap of timed-out commands.
+        var time = new FakeTimeProvider();
+        FinBridgeOptions options = CreateOptions(o => o.AgentLivenessMs = 10_000_000);
+        using Domain.FinBridge.FinBridge bridge = CreateBridge(time, options);
+        bridge.HelloAsync(Hello());
+
+        // Time out many more commands than the tombstone cap (4096). Each is enqueued and allowed to
+        // expire; we drain after each so the channel does not fill (the drain loop skips+discards the
+        // now-tombstoned command). This exercises eviction of the oldest tombstones.
+        for (int i = 0; i < 4200; i++)
+        {
+            Task<FinResult> send = bridge.SendAsync(AgentId, Command($"old-{i}", deadlineMs: 1_000));
+            time.Advance(TimeSpan.FromMilliseconds(1_001));
+            FinBridgeException ex = await Assert.ThrowsAsync<FinBridgeException>(() => send);
+            Assert.Equal(FinErrorCode.QueuedNotPickedUp, ex.Code);
+
+            // Flush the tombstoned command out of the channel so the next enqueue has room.
+            PollResponse drained = await PollAndReleaseAsync(bridge, time, options);
+            Assert.Empty(drained.Commands);
+        }
+
+        // A straggling result for the very first (now-evicted) id must still be discarded silently:
+        // no waiter exists, so it is dropped as "unknown" rather than re-applied.
+        PollResponse after = await PollAndReleaseAsync(bridge, time, options, OkResult("old-0"));
+        Assert.Empty(after.Commands);
+
+        // A fresh command after all that still round-trips cleanly.
+        Task<FinResult> fresh = bridge.SendAsync(AgentId, Command("fresh", deadlineMs: 60_000));
+        await bridge.PollAsync(Poll());
+        await PollAndReleaseAsync(bridge, time, options, OkResult("fresh"));
+        Assert.True((await fresh).Ok);
+    }
+
+    // PollWithEventsAsync for a specific agent id (the shared helper is pinned to the default AgentId).
+    private static async Task<PollResponse> PollAgentWithEventsAsync(
+        Domain.FinBridge.FinBridge bridge, FakeTimeProvider time, FinBridgeOptions options, string agentId, params FinEvent[] events)
+    {
+        Task<PollResponse> poll = bridge.PollAsync(new PollRequest
+        {
+            ProtocolVersion = FinProtocol.Version,
+            AgentId = agentId,
+            AgentScriptVersion = ScriptVersion,
+            Results = [],
+            Events = events,
+            DroppedEvents = 0,
+        });
+        if (!poll.IsCompleted)
+        {
+            time.Advance(TimeSpan.FromMilliseconds(options.ServerHoldMs + 1));
+        }
+
+        return await poll;
     }
 
     [Fact]

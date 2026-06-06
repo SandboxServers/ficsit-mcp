@@ -81,24 +81,22 @@ internal static class FinBridgeEndpoints
     }
 
     private static IResult InvalidBody(string envelope)
-        => Results.BadRequest(new FinError
+        => FinHttpError.Result(new FinError
         {
             Code = FinErrorCode.InvalidArgs,
             Message = $"Request body is not a valid {envelope} envelope.",
         });
 
     private static IResult VersionMismatch(ProtocolVersionMismatchException ex)
-        => Results.Json(
-            new FinError
+        => FinHttpError.Result(new FinError
+        {
+            Code = FinErrorCode.ProtocolVersionMismatch,
+            Message = ex.Message,
+            Details = System.Text.Json.JsonSerializer.SerializeToElement(new
             {
-                Code = FinErrorCode.ProtocolVersionMismatch,
-                Message = ex.Message,
-                Details = System.Text.Json.JsonSerializer.SerializeToElement(new
-                {
-                    agentVersion = ex.AgentVersion,
-                    serverSupportedMin = ex.ServerSupportedMin,
-                    serverSupportedMax = ex.ServerSupportedMax,
-                }),
-            },
-            statusCode: StatusCodes.Status426UpgradeRequired);
+                agentVersion = ex.AgentVersion,
+                serverSupportedMin = ex.ServerSupportedMin,
+                serverSupportedMax = ex.ServerSupportedMax,
+            }),
+        });
 }

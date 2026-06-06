@@ -248,8 +248,11 @@ never re-applied. The two timeout outcomes carry different safety meaning:
 computer powered and running the agent script?"), rather than hanging to the deadline.
 
 **Back-pressure asymmetry.** The per-agent command queue **rejects** on full (`QUEUE_FULL`) — never
-drop a mutation. The event ring **drops oldest** on overflow — telemetry loss is acceptable — and
-events fan out to subscribers via per-subscriber drop-oldest channels (issue #21 consumes this).
+drop a mutation. The **per-agent** event ring (cap `MaxBufferedEvents` applies per agent, so one
+chatty agent can't evict another's events) **drops oldest** on overflow — telemetry loss is
+acceptable — exposing a per-agent dropped count on `AgentLiveness`; events also fan out to
+subscribers via per-subscriber drop-oldest channels (issue #21 consumes this). `RecentEvents()`
+merges all agents' rings ordered by server-stamped `receivedAt`.
 
 **Config knobs** (`FinBridge` section, env `FICSITMCP_FinBridge__<Key>`): `ListenUrl`,
 `SharedSecret` (secret), and tunable `ServerHoldMs` (25000), `AgentLivenessMs` (40000, must exceed

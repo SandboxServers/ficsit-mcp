@@ -47,14 +47,10 @@ internal sealed class FinTokenAuthMiddleware
         return CryptographicOperations.FixedTimeEquals(providedUtf8, _expectedTokenUtf8);
     }
 
-    private static async Task WriteUnauthorizedAsync(HttpContext context)
-    {
-        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-        context.Response.ContentType = "application/json";
-        await context.Response.WriteAsJsonAsync(new FinError
+    private static Task WriteUnauthorizedAsync(HttpContext context)
+        => FinHttpError.WriteAsync(context, new FinError
         {
             Code = FinErrorCode.Unauthorized,
             Message = $"Missing or invalid {FinProtocol.TokenHeader}.",
-        }).ConfigureAwait(false);
-    }
+        });
 }

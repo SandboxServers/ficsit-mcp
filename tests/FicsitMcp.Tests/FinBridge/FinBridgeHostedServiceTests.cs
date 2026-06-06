@@ -175,6 +175,69 @@ public sealed class FinBridgeHostedServiceTests : IAsyncLifetime
         Assert.Contains("agent script", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task EmptyTokenHeader_IsRejected_With401_LikeAMissingOne()
+    {
+        // G15: a present-but-empty X-FIN-Token must be rejected exactly like a missing header — the
+        // constant-time compare against the (non-empty) secret fails, never matches "".
+        using var emptyToken = new HttpClient { BaseAddress = new Uri(_baseUrl) };
+        emptyToken.DefaultRequestHeaders.TryAddWithoutValidation(FinProtocol.TokenHeader, "");
+
+        HttpResponseMessage response = await emptyToken.PostAsJsonAsync(FinProtocol.HelloPath, new HelloRequest
+        {
+            ProtocolVersion = FinProtocol.Version,
+            AgentId = AgentId,
+            AgentScriptVersion = ScriptVersion,
+        });
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.False(_bridge.GetLiveness(AgentId).IsAlive);
+    }
+
+    [Fact]
+    public async Task StopAsync_WhileAPollIsHeld_CompletesWithoutHanging()
+    {
+        // G14: stopping the listener while an agent long-poll is parked on the hold must not hang
+        // shutdown; the held request is torn down and StopAsync returns promptly.
+        await _agent.PostAsJsonAsync(FinProtocol.HelloPath, new HelloRequest
+        {
+            ProtocolVersion = FinProtocol.Version,
+            AgentId = AgentId,
+            AgentScriptVersion = ScriptVersion,
+        });
+
+        // Start a poll that will hold (nothing queued) and do not await it yet.
+        using var pollCts = new CancellationTokenSource();
+        Task<HttpResponseMessage> heldPoll = _agent.PostAsJsonAsync(FinProtocol.PollPath, new PollRequest
+        {
+            ProtocolVersion = FinProtocol.Version,
+            AgentId = AgentId,
+            AgentScriptVersion = ScriptVersion,
+            Results = [],
+            Events = [],
+            DroppedEvents = 0,
+        }, pollCts.Token);
+
+        // Give the request a moment to reach the server and park on the hold, then stop.
+        await Task.WhenAny(heldPoll, Task.Delay(250));
+
+        Task stop = _service.StopAsync(CancellationToken.None);
+        await stop.WaitAsync(TimeSpan.FromSeconds(10)); // must not hang
+
+        // The held client request is now moot; cancel it so the test does not leak the connection.
+        pollCts.Cancel();
+        try
+        {
+            await heldPoll;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or OperationCanceledException)
+        {
+            // Expected: the connection was torn down by shutdown or cancelled by the test.
+        }
+
+        // The fixture's DisposeAsync calls StopAsync again; it is idempotent (_app is already null).
+    }
+
     private async Task<PollResponse?> PollAsync(params FinResult[] results)
     {
         HttpResponseMessage response = await _agent.PostAsJsonAsync(FinProtocol.PollPath, new PollRequest
