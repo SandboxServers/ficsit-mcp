@@ -1,4 +1,5 @@
 using System.Net.Security;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
 using Microsoft.Extensions.Logging;
@@ -72,30 +73,41 @@ public sealed class TofuCertificateValidator
             return false;
         }
 
-        string presented = certificate.Thumbprint;
-        string? pinned = _pinStore.GetPinned(host);
+        // Pin a SHA-256 hash of the certificate. SHA-1 (X509Certificate2.Thumbprint) is collision-
+        // prone and unsuitable as a security anchor; SHA-256 gives a collision-resistant pin.
+        string presented = certificate.GetCertHashString(HashAlgorithmName.SHA256);
 
-        if (pinned is null)
-        {
-            // First contact: trust and pin. This is the "use" in trust-on-first-use; the window
-            // of exposure is exactly the first connection, the standard TOFU tradeoff.
-            _pinStore.Pin(host, presented);
-            _logger.LogInformation(
-                "Pinned TLS certificate for '{Host}' on first contact (thumbprint {Thumbprint}). " +
-                "Future connections must present the same certificate.",
-                host,
-                presented);
-            return true;
-        }
+        // Best-effort read purely to decide whether to LOG a first-contact pin (not part of the
+        // trust decision — that stays atomic in GetOrPin below). A benign race here only affects the
+        // log line, never whether we trust the certificate.
+        bool looksLikeFirstContact = _pinStore.GetPinned(host) is null;
 
-        if (ThumbprintsMatch(pinned, presented))
+        // GetOrPin is atomic: on first contact it stores and returns the presented hash; if a pin
+        // already exists (including a pin written by a racing first-contact) it returns that
+        // existing value instead. So the returned "effective" pin is what we must match against —
+        // a lost first-contact race becomes a deterministic mismatch below rather than two writers
+        // clobbering each other.
+        string effective = _pinStore.GetOrPin(host, presented);
+
+        if (ThumbprintsMatch(effective, presented))
         {
+            if (looksLikeFirstContact)
+            {
+                // First contact: trust and pin. This is the "use" in trust-on-first-use; the window
+                // of exposure is exactly the first connection, the standard TOFU tradeoff.
+                _logger.LogInformation(
+                    "Pinned TLS certificate for '{Host}' on first contact (SHA-256 {Thumbprint}). " +
+                    "Future connections must present the same certificate.",
+                    host,
+                    presented);
+            }
+
             return true;
         }
 
         // Pinned thumbprint differs from what the server presented: refuse loudly rather than
         // silently trusting a new certificate (which would defeat the whole point of pinning).
-        throw new CertificatePinMismatchException(host, pinned, presented, _pinStore.PinFilePath);
+        throw new CertificatePinMismatchException(host, effective, presented, _pinStore.PinFilePath);
     }
 
     // Thumbprints compare case-insensitively; the store already canonicalizes, but the presented

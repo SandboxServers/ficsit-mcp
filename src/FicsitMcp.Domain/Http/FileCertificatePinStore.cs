@@ -73,6 +73,32 @@ public sealed class FileCertificatePinStore : ICertificatePinStore
         }
     }
 
+    /// <inheritdoc />
+    public string GetOrPin(string host, string thumbprint)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(host);
+        ArgumentException.ThrowIfNullOrWhiteSpace(thumbprint);
+
+        string key = NormalizeHost(host);
+        string value = NormalizeThumbprint(thumbprint);
+
+        // The whole check-or-add is done under the write lock so the first-contact decision and the
+        // persistence are atomic: a second concurrent first-contact sees the first writer's value
+        // and never overwrites it. We persist ONLY when we actually added a new pin, so a normal
+        // "pin already present" lookup doesn't rewrite the file.
+        lock (_writeLock)
+        {
+            if (_pins.TryGetValue(key, out string? existing))
+            {
+                return existing;
+            }
+
+            _pins[key] = value;
+            Persist();
+            return value;
+        }
+    }
+
     // Hosts are case-insensitive; store a single canonical form so "Host" and "host" match.
     private static string NormalizeHost(string host) => host.Trim().ToLowerInvariant();
 

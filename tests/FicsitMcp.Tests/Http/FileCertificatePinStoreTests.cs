@@ -58,6 +58,49 @@ public sealed class FileCertificatePinStoreTests : IDisposable
     }
 
     [Fact]
+    public void GetOrPin_ReturnsExistingPin_WhenSecondThumbprintOffered()
+    {
+        // Arrange: this is the lost-race scenario — two first-contacts offer different thumbprints.
+        var store = new FileCertificatePinStore(PinPath);
+
+        // Act: the first GetOrPin stores "AABBCC"; the second offers a DIFFERENT thumbprint but must
+        // get back the value that won the race (the first one), not overwrite it.
+        string first = store.GetOrPin("host.local", "AABBCC");
+        string second = store.GetOrPin("host.local", "DDEEFF");
+
+        // Assert: both calls agree on the first writer's value; the store was not clobbered.
+        Assert.Equal("AABBCC", first);
+        Assert.Equal("AABBCC", second);
+        Assert.Equal("AABBCC", store.GetPinned("host.local"));
+    }
+
+    [Fact]
+    public void GetOrPin_NormalizesThumbprint_OnFirstStore()
+    {
+        // Arrange
+        var store = new FileCertificatePinStore(PinPath);
+
+        // Act: separators/casing are canonicalized just like Pin does.
+        string effective = store.GetOrPin("host.local", "aa:bb:cc");
+
+        // Assert
+        Assert.Equal("AABBCC", effective);
+    }
+
+    [Fact]
+    public void HostKey_WithPort_IsHandledAndCaseInsensitive()
+    {
+        // Arrange: pins are now keyed by authority (host:port). The store must normalize a
+        // "host:port" key (lower-casing the host part while preserving the port).
+        var store = new FileCertificatePinStore(PinPath);
+        store.Pin("Host.Local:7777", "AABBCC");
+
+        // Act + Assert: a differently-cased authority still hits; a different port does NOT.
+        Assert.Equal("AABBCC", store.GetPinned("HOST.LOCAL:7777"));
+        Assert.Null(store.GetPinned("host.local:8888"));
+    }
+
+    [Fact]
     public void Load_TreatsCorruptFileAsEmpty_InsteadOfThrowing()
     {
         // Arrange: a garbage pin file must not crash the host on startup.

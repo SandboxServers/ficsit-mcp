@@ -18,4 +18,15 @@ public interface ICertificatePinStore
     /// contact. Persists immediately so a restart keeps trusting the same certificate.
     /// </summary>
     void Pin(string host, string thumbprint);
+
+    /// <summary>
+    /// Atomically returns the EFFECTIVE pin for <paramref name="host"/>: the existing pin if one is
+    /// already stored, otherwise stores <paramref name="thumbprint"/> and returns it. Unlike a
+    /// check-then-<see cref="Pin"/> sequence, this is a single atomic operation, so two concurrent
+    /// first-contact attempts presenting different certificates resolve deterministically — the
+    /// first writer wins and the loser gets back the winner's value (which it can compare against
+    /// what it presented and reject on mismatch). The returned value is normalized to the store's
+    /// canonical thumbprint form.
+    /// </summary>
+    string GetOrPin(string host, string thumbprint);
 }

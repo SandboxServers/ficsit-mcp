@@ -4,11 +4,13 @@ using FicsitMcp.Domain.Configuration;
 using FicsitMcp.Domain.Http;
 
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Http.Resilience;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 using Polly;
+using Polly.Retry;
 
 namespace FicsitMcp.Http;
 
@@ -41,10 +43,22 @@ public static class SurfaceHttpClientRegistration
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        // One pin store for the process, persisted under LocalApplicationData. Singleton so the
-        // in-memory pin cache is shared across every connection attempt within a run.
-        services.AddSingleton<ICertificatePinStore>(
-            _ => new FileCertificatePinStore(FileCertificatePinStore.DefaultPinFilePath));
+        // The resilience pipeline reads time through TimeProvider so its timeouts/backoff can be
+        // virtualized in tests (FakeTimeProvider). Register the real clock if the host hasn't
+        // already supplied one — TryAdd keeps a test-provided FakeTimeProvider in place.
+        services.TryAddSingleton(TimeProvider.System);
+
+        // One pin store for the process, persisted under LocalApplicationData by default (the
+        // dedicated-server surface can override the path via CertPinFilePath, e.g. a container's
+        // mounted writable volume). Singleton so the in-memory pin cache is shared across every
+        // connection attempt within a run. The path is resolved here, at singleton construction.
+        services.AddSingleton<ICertificatePinStore>(static provider =>
+        {
+            DedicatedServerOptions options = provider
+                .GetRequiredService<IOptions<DedicatedServerOptions>>().Value;
+            return new FileCertificatePinStore(
+                options.CertPinFilePath ?? FileCertificatePinStore.DefaultPinFilePath);
+        });
 
         AddDedicatedServerClient(services);
         AddFrmClient(services);
@@ -87,7 +101,7 @@ public static class SurfaceHttpClientRegistration
                     {
                         RemoteCertificateValidationCallback = (_, certificate, _, _) =>
                             validator.Validate(
-                                GetHost(provider),
+                                GetPinKey(provider),
                                 certificate as System.Security.Cryptography.X509Certificates.X509Certificate2),
                     },
                 };
@@ -97,6 +111,9 @@ public static class SurfaceHttpClientRegistration
 
     private static void AddFrmClient(IServiceCollection services)
     {
+        // FRM Direct mode only. DedicatedApiPassthrough routing (reuse the dedicated-server client +
+        // creds for POST /api/v1 function 'frm') is deferred to #11; FrmOptions.TransportMode is
+        // validated but not yet consulted here.
         services
             .AddHttpClient(SurfaceHttpClients.Frm)
             .ConfigureHttpClient(static (provider, client) =>
@@ -109,22 +126,31 @@ public static class SurfaceHttpClientRegistration
             .AddSurfaceResilience();
     }
 
-    private static string GetHost(IServiceProvider provider)
+    // The pin key is the AUTHORITY (host:port), not just the host. Two different services can sit
+    // on the same host at different ports (e.g. dev fixtures), so pinning by host alone would let
+    // one port's cert be (mis)matched against another's. Uri.Authority is host[:port].
+    private static string GetPinKey(IServiceProvider provider)
     {
         DedicatedServerOptions options = provider
             .GetRequiredService<IOptions<DedicatedServerOptions>>().Value;
-        return new Uri(options.BaseUrl!, UriKind.Absolute).Host;
+        return new Uri(options.BaseUrl!, UriKind.Absolute).Authority;
     }
 
     /// <summary>
     /// Adds the SINGLE shared resilience handler. Per MS guidance (and the issue's verified
-    /// comment), add exactly one handler per client; we use the custom-pipeline overload instead
-    /// of <c>AddStandardResilienceHandler</c> so retries can be disabled for non-idempotent HTTP
-    /// methods (POST <c>SaveGame</c>/<c>Shutdown</c>/<c>RunCommand</c> must never be replayed).
+    /// comment), add exactly one handler per client; we use the custom-pipeline overload so retries
+    /// can be gated on a per-REQUEST opt-in rather than HTTP method alone. The
+    /// <see cref="ResilienceHandlerContext"/> overload gives us DI access so the pipeline reads time
+    /// through the registered <see cref="TimeProvider"/> (real in production, fake in tests).
     /// </summary>
     private static void AddSurfaceResilience(this IHttpClientBuilder builder) =>
-        builder.AddResilienceHandler("surface", static pipeline =>
+        builder.AddResilienceHandler("surface", static (pipeline, context) =>
         {
+            // Drive every timeout/backoff delay through the registered TimeProvider so a
+            // FakeTimeProvider can advance virtual time in tests and exercise the total budget at
+            // ~zero wall-clock. In production this resolves TimeProvider.System.
+            pipeline.TimeProvider = context.ServiceProvider.GetRequiredService<TimeProvider>();
+
             // Order matters: total timeout is OUTERMOST so it caps the whole call (all retries);
             // retry is in the middle; attempt timeout is INNERMOST so each try is individually bounded.
             pipeline.AddTimeout(TotalTimeout);
@@ -134,21 +160,57 @@ public static class SurfaceHttpClientRegistration
             pipeline.AddTimeout(AttemptTimeout);
         });
 
-    private static HttpRetryStrategyOptions BuildRetryOptions()
+    private static HttpRetryStrategyOptions BuildRetryOptions() => new()
     {
-        var retry = new HttpRetryStrategyOptions
-        {
-            MaxRetryAttempts = 3,
-            BackoffType = DelayBackoffType.Exponential,
-            UseJitter = true,
-            Delay = TimeSpan.FromMilliseconds(500),
-        };
+        MaxRetryAttempts = 3,
+        BackoffType = DelayBackoffType.Exponential,
+        UseJitter = true,
+        Delay = TimeSpan.FromMilliseconds(500),
 
-        // CRITICAL: never retry non-idempotent methods. A replayed POST SaveGame/Shutdown/
-        // RunCommand is a real outage (a second shutdown, a duplicated command). DisableForUnsafe-
-        // HttpMethods turns off retries for POST/PATCH/PUT/DELETE/CONNECT per RFC 7231; only safe
-        // idempotent calls (GET, etc.) are retried on transient faults. Do NOT remove in a refactor.
-        retry.DisableForUnsafeHttpMethods();
-        return retry;
+        // Retry altitude is the dangerous bit. The dedicated-server API is POST-only (one endpoint,
+        // a function envelope), so idempotency is per-FUNCTION, not per-METHOD: a method-only gate
+        // (the old DisableForUnsafeHttpMethods) would mean NOTHING on that surface ever retries.
+        // Instead retry transient faults when EITHER the method is safe (GET/HEAD/OPTIONS/TRACE)
+        // OR the request explicitly opted in via SurfaceHttpRequestOptions.AllowRetry. The
+        // dedicated-server client (#5) sets that flag only on idempotent functions
+        // (QueryServerState/HealthCheck/VerifyAuthenticationToken) and NEVER on SaveGame/Shutdown/
+        // RunCommand — a replayed shutdown/command is a real outage. Do NOT weaken this in a refactor.
+        ShouldHandle = static args =>
+        {
+            if (!HttpClientResiliencePredicates.IsTransient(args.Outcome))
+            {
+                // Not a transient fault (e.g. a 404 or a non-transport exception): never retry,
+                // regardless of method or opt-in.
+                return ValueTask.FromResult(false);
+            }
+
+            // The request is reliably on the resilience context for both response and exception
+            // outcomes (the resilience handler stamps it before invoking the pipeline). Fall back to
+            // the response's RequestMessage if ever absent. If we cannot identify the request at all,
+            // fail safe: do NOT retry (assume it might be non-idempotent).
+            HttpRequestMessage? request =
+                args.Context.GetRequestMessage() ?? args.Outcome.Result?.RequestMessage;
+            return ValueTask.FromResult(request is not null && MayRetry(request));
+        },
+    };
+
+    // A request may be retried on a transient fault when its method is safe/idempotent, OR when it
+    // carries the explicit AllowRetry opt-in (set by callers only on idempotent POST functions).
+    private static bool MayRetry(HttpRequestMessage request)
+    {
+        if (request.Options.TryGetValue(SurfaceHttpRequestOptions.AllowRetry, out bool allowRetry)
+            && allowRetry)
+        {
+            return true;
+        }
+
+        return IsSafeMethod(request.Method);
     }
+
+    // RFC 9110 safe methods are inherently retry-safe (no observable side effect on the server).
+    private static bool IsSafeMethod(HttpMethod method) =>
+        method == HttpMethod.Get
+        || method == HttpMethod.Head
+        || method == HttpMethod.Options
+        || method == HttpMethod.Trace;
 }

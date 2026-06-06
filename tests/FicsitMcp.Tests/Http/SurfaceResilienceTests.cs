@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http;
 
 using FicsitMcp.Configuration;
 using FicsitMcp.Domain.Http;
@@ -74,6 +75,30 @@ public sealed class SurfaceResilienceTests
         // Assert: exactly ONE attempt — the request was sent once and never replayed.
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
         Assert.Equal(1, handler.AttemptCount);
+    }
+
+    [Fact]
+    public async Task TransientPost_WithAllowRetryOptIn_IsRetried()
+    {
+        // Arrange: a POST is normally NOT retried, but the dedicated-server API is POST-only and
+        // idempotency is per-FUNCTION. A caller marks an idempotent function (e.g. QueryServerState)
+        // with the AllowRetry opt-in, which must re-enable transient-fault retries for that POST.
+        var handler = FakeHttpMessageHandler.FailsThenSucceeds(failCount: 2);
+        using ServiceProvider provider = BuildProvider(handler);
+        HttpClient client = FrmClient(provider);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1")
+        {
+            Content = new StringContent("{}"),
+        };
+        request.Options.Set(SurfaceHttpRequestOptions.AllowRetry, true);
+
+        // Act
+        using HttpResponseMessage response = await client.SendAsync(request, CancellationToken.None);
+
+        // Assert: recovered after retries (3 = 1 original + 2 retries), proving the opt-in worked.
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(3, handler.AttemptCount);
     }
 
     [Fact]

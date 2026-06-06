@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
 using FicsitMcp.Domain.Http;
@@ -18,7 +19,16 @@ public sealed class TofuCertificateValidatorTests
         public string? GetPinned(string host) => _pins.GetValueOrDefault(host);
 
         public void Pin(string host, string thumbprint) => _pins[host] = thumbprint;
+
+        // Atomic check-or-add mirroring FileCertificatePinStore: returns the existing pin if any,
+        // otherwise stores and returns the offered thumbprint. GetOrAdd gives the atomicity.
+        public string GetOrPin(string host, string thumbprint) =>
+            _pins.GetOrAdd(host, thumbprint);
     }
+
+    // The validator pins a SHA-256 hash of the certificate (not the SHA-1 Thumbprint).
+    private static string Sha256(X509Certificate2 cert) =>
+        cert.GetCertHashString(HashAlgorithmName.SHA256);
 
     [Fact]
     public void Validate_FirstContact_AcceptsAndPinsThumbprint()
@@ -31,9 +41,9 @@ public sealed class TofuCertificateValidatorTests
         // Act
         bool accepted = validator.Validate("host.local", cert);
 
-        // Assert: trusted on first contact, and the thumbprint is now pinned for the host.
+        // Assert: trusted on first contact, and the SHA-256 hash is now pinned for the host.
         Assert.True(accepted);
-        Assert.Equal(cert.Thumbprint, store.GetPinned("host.local"));
+        Assert.Equal(Sha256(cert), store.GetPinned("host.local"));
     }
 
     [Fact]
@@ -68,11 +78,11 @@ public sealed class TofuCertificateValidatorTests
 
         // Assert: refused, and the message names the pin file so the operator can re-pin.
         Assert.Equal("host.local", ex.Host);
-        Assert.Equal(first.Thumbprint, ex.PinnedThumbprint);
-        Assert.Equal(second.Thumbprint, ex.PresentedThumbprint);
+        Assert.Equal(Sha256(first), ex.PinnedThumbprint);
+        Assert.Equal(Sha256(second), ex.PresentedThumbprint);
         Assert.Contains(store.PinFilePath, ex.Message, StringComparison.Ordinal);
         // The pin must NOT have been silently overwritten with the rogue thumbprint.
-        Assert.Equal(first.Thumbprint, store.GetPinned("host.local"));
+        Assert.Equal(Sha256(first), store.GetPinned("host.local"));
     }
 
     [Fact]
@@ -98,7 +108,7 @@ public sealed class TofuCertificateValidatorTests
         // entirely (so a dev can flip the flag to recover from a self-inflicted cert change).
         var store = new InMemoryPinStore();
         using X509Certificate2 pinned = TestCertificates.CreateSelfSigned();
-        store.Pin("host.local", pinned.Thumbprint);
+        store.Pin("host.local", Sha256(pinned));
         var validator = new TofuCertificateValidator(store, dangerouslyAcceptAnyCert: true);
         using X509Certificate2 different = TestCertificates.CreateSelfSigned();
 
