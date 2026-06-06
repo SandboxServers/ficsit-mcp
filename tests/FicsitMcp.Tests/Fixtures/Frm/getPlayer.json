@@ -1,0 +1,15 @@
+[
+  {
+    "Name": "Pioneer",
+    "ClassName": "Char_Player_C",
+    "location": { "x": 12345.678, "y": -98765.4321, "z": 5000.0, "rotation": 359.9 },
+    "Speed": 18.5,
+    "Online": true,
+    "PlayerHP": 100.0,
+    "Dead": false,
+    "Inventory": [
+      { "Name": "Iron Ore", "ClassName": "Desc_OreIron_C", "Amount": 50, "MaxAmount": 100 }
+    ],
+    "features": { "properties": { "name": "Pioneer", "type": "Player" } }
+  }
+]

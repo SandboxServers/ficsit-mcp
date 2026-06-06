@@ -1,0 +1,24 @@
+[
+  {
+    "Name": "Iron Ore",
+    "ClassName": "Desc_OreIron_C",
+    "Purity": "Pure",
+    "EnumPurity": "EResourcePurity::RP_Pure",
+    "ResourceForm": "Solid",
+    "NodeType": "Node",
+    "Exploited": true,
+    "location": { "x": 500000.0, "y": 250000.0, "z": 0.0, "rotation": 0.0 },
+    "features": { "properties": { "name": "Iron Ore", "type": "Resource Node" } }
+  },
+  {
+    "Name": "Caterium Ore",
+    "ClassName": "Desc_OreGold_C",
+    "Purity": "Normal",
+    "EnumPurity": "EResourcePurity::RP_Normal",
+    "ResourceForm": "Solid",
+    "NodeType": "Node",
+    "Exploited": false,
+    "location": { "x": 510000.0, "y": 255000.0, "z": 0.0, "rotation": 0.0 },
+    "AddedInLaterVersion": [1, 2, 3]
+  }
+]

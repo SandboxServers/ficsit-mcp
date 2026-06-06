@@ -1,0 +1,27 @@
+[
+  {
+    "Name": "Iron Plate",
+    "ClassName": "Desc_IronPlate_C",
+    "ProdPerMin": "P: 60/ min - C: 45/ min",
+    "ProdPercent": 75.0,
+    "ConsPercent": 50.0,
+    "CurrentProd": 60.0,
+    "MaxProd": 80.0,
+    "CurrentConsumed": 45.0,
+    "MaxConsumed": 90.0,
+    "Type": "Solid"
+  },
+  {
+    "Name": "Water",
+    "ClassName": "Desc_Water_C",
+    "ProdPerMin": "P: 120/ min - C: 120/ min",
+    "ProdPercent": 100.0,
+    "ConsPercent": 100.0,
+    "CurrentProd": 120.0,
+    "MaxProd": 120.0,
+    "CurrentConsumed": 120.0,
+    "MaxConsumed": 120.0,
+    "Type": "Liquid",
+    "FutureUnknownField": "ignored by the deserializer"
+  }
+]
