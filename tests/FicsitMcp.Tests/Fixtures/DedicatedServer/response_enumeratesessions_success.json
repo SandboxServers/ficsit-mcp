@@ -1,0 +1,25 @@
+{
+  "data": {
+    "sessions": [
+      {
+        "sessionName": "My Session",
+        "saveHeaders": [
+          {
+            "saveVersion": 46,
+            "buildVersion": 368883,
+            "saveName": "AutoSave_0",
+            "mapName": "Persistent_Level",
+            "mapOptions": "",
+            "sessionName": "My Session",
+            "playDurationSeconds": 123456,
+            "saveDateTime": "2026-06-05T18:30:00.000Z",
+            "isModdedSave": false,
+            "isEditedSave": false,
+            "isCreativeModeEnabled": false
+          }
+        ]
+      }
+    ],
+    "currentSessionIndex": 0
+  }
+}

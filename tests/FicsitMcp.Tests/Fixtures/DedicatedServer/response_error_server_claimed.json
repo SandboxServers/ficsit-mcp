@@ -1,0 +1,4 @@
+{
+  "errorCode": "server_claimed",
+  "errorMessage": "This server has already been claimed."
+}

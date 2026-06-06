@@ -1,0 +1,17 @@
+{
+  "data": {
+    "serverGameState": {
+      "activeSessionName": "My Session",
+      "numConnectedPlayers": 2,
+      "playerLimit": 4,
+      "techTier": 5,
+      "activeSchematic": "Schematic_Tier5_C",
+      "gamePhase": "GP_Project_Assembly_Phase_2",
+      "isGameRunning": true,
+      "totalGameDuration": 123456,
+      "isGamePaused": false,
+      "averageTickRate": 29.97,
+      "autoLoadSessionName": "My Session"
+    }
+  }
+}
