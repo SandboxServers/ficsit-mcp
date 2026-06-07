@@ -1,4 +1,5 @@
 using FicsitMcp.Configuration;
+using FicsitMcp.DedicatedServer;
 using FicsitMcp.Domain;
 using FicsitMcp.Domain.GameData;
 using FicsitMcp.Domain.GameData.Model;
@@ -44,6 +45,10 @@ builder.Services.AddSingleton<IServerInfoProvider, ServerInfoProvider>();
 // BaseAddress from its surface options at resolution time, so a client built for an unconfigured
 // surface fails fast naming the env var. Surface clients NEVER new up HttpClient.
 builder.Services.AddSurfaceHttpClients();
+
+// Typed client for the official Dedicated Server HTTPS API, layered on the named dedicated-server
+// HttpClient above. Tools (#6-#9) depend on IDedicatedServerApiClient, never on raw HTTP.
+builder.Services.AddDedicatedServerApiClient();
 
 // FRM observe surface: the typed client over the FRM mod web server (live world state). Resolved
 // lazily over the named FRM HttpClient, so an unconfigured FRM surface fails only when an FRM tool

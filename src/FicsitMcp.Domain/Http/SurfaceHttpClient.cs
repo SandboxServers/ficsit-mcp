@@ -42,15 +42,31 @@ public sealed class SurfaceHttpClient
     /// a <see cref="CertificatePinMismatchException"/> from the TOFU validator is surfaced as-is.
     /// Callers own response-status handling (this does not call EnsureSuccessStatusCode).
     /// </summary>
+    public Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken) =>
+        SendAsync(request, HttpCompletionOption.ResponseContentRead, cancellationToken);
+
+    /// <summary>
+    /// Sends <paramref name="request"/> with an explicit <paramref name="completionOption"/> and
+    /// returns the raw response, threading <paramref name="cancellationToken"/> all the way through.
+    /// Pass <see cref="HttpCompletionOption.ResponseHeadersRead"/> for large/streamed bodies (e.g. a
+    /// save-game download) so <see cref="HttpClient"/> returns as soon as the headers are available
+    /// instead of buffering the whole body into memory first; the caller then streams
+    /// <see cref="HttpContent"/> off the wire in chunks. Transport faults are mapped exactly as the
+    /// default overload (connection refused/DNS/timeout → <see cref="SurfaceUnreachableException"/>,
+    /// TOFU mismatch surfaced as-is); callers own response-status handling.
+    /// </summary>
     public async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
+        HttpCompletionOption completionOption,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
 
         try
         {
-            return await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            return await _httpClient.SendAsync(request, completionOption, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

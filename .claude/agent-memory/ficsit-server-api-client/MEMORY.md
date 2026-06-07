@@ -1,0 +1,6 @@
+# ficsit-server-api-client memory
+
+- [Dedicated Server API surface](project_api_surface.md) — doc-verified function list, envelope/casing, error codes, save transports
+- [Auth lifecycle design](project_auth_lifecycle.md) — token precedence, 401 re-auth/replay, non-idempotent ambiguity
+- [Client layout & open-set envelope](project_client_layout.md) — file map, InvokeRawAsync seam for #11 FRM passthrough, fixtures
+- [DI lifetime & validation contract](project_di_lifetime_and_validation.md) — singleton + per-call HttpClient factory, BaseUrl-without-AdminToken bootstrap mode

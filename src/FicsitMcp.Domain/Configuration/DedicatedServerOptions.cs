@@ -63,14 +63,17 @@ public sealed class DedicatedServerOptions : IConfigurableSurface, IValidatableO
     /// <inheritdoc />
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
-        // The token is only meaningful once the surface is active. Requiring it always would
-        // make an unconfigured surface fail validation, breaking the "independently optional"
-        // contract; requiring it never would let an active surface start without auth.
-        if (IsConfigured && !AdminToken.HasValue)
-        {
-            yield return new ValidationResult(
-                $"{SurfaceName} is configured but has no admin token; set FICSITMCP_{SectionName}__{nameof(AdminToken)}.",
-                [nameof(AdminToken)]);
-        }
+        // Intentionally no AdminToken-required rule. The dedicated-server surface supports a
+        // "no token yet" mode: the client can run with BaseUrl set but no AdminToken so a caller can
+        // perform the initial ClaimServer / PasswordLogin workflow (which MINTS the first token) over
+        // this same TLS+pinned channel. The client enforces auth PER FUNCTION at call time —
+        // unauthenticated functions (HealthCheck, login, claim) work tokenless; an authenticated
+        // function with no token yet fails fast with an actionable DedicatedServerAuthException naming
+        // the remedies. Requiring the token here would block that bootstrap entirely.
+        //
+        // NB: this differs from the FIN bridge, whose SharedSecret IS required when configured — an
+        // inbound open listener with no secret is an exposed attack surface, whereas this is an
+        // OUTBOUND client whose missing credential merely defers auth to a later mint step.
+        return [];
     }
 }

@@ -167,9 +167,12 @@ public sealed class SurfaceOptionsTests
     }
 
     [Fact]
-    public void Validation_Fails_WhenConfiguredSurfaceHasNoCredential()
+    public void DedicatedServer_BaseUrlWithoutToken_ValidatesCleanly_ForBootstrapWorkflows()
     {
-        // Arrange: URL present (surface active) but no admin token.
+        // Arrange: URL present (surface active) but NO admin token. This is the "no token yet" mode
+        // that enables the initial ClaimServer / PasswordLogin bootstrap — those functions MINT the
+        // first token. The client enforces auth per-function at call time, so options validation must
+        // NOT require AdminToken merely because BaseUrl is set (contract relaxed per PR #34 review).
         var appsettings = new Dictionary<string, string?>
         {
             ["DedicatedServer:BaseUrl"] = "https://127.0.0.1:7777",
@@ -177,9 +180,12 @@ public sealed class SurfaceOptionsTests
         using ServiceProvider provider = BuildProvider(appsettings);
         IOptions<DedicatedServerOptions> options = provider.GetRequiredService<IOptions<DedicatedServerOptions>>();
 
-        // Act + Assert
-        OptionsValidationException ex = Assert.Throws<OptionsValidationException>(() => _ = options.Value);
-        Assert.Contains("admin token", string.Join(" ", ex.Failures), StringComparison.OrdinalIgnoreCase);
+        // Act
+        DedicatedServerOptions value = options.Value;
+
+        // Assert: the surface is configured (active) yet validates with no credential present.
+        Assert.True(value.IsConfigured);
+        Assert.False(value.AdminToken.HasValue);
     }
 
     [Fact]

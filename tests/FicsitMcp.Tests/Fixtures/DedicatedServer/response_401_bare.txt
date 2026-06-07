@@ -1,0 +1,6 @@
+HTTP/1.1 401 Unauthorized
+(no body)
+
+Captured shape: the server rejects an expired/invalid bearer token with a bare 401 and no JSON
+body. Drives the client's transparent re-auth-and-replay (idempotent) or the
+DedicatedServerAmbiguousResultException (non-idempotent) path.

@@ -1,0 +1,13 @@
+{
+  "function": "CreateNewGame",
+  "data": {
+    "newGameData": {
+      "sessionName": "New World",
+      "mapName": "",
+      "startingLocation": "",
+      "bSkipOnboarding": true,
+      "advancedGameSettings": {},
+      "customOptionsOnlyForModding": {}
+    }
+  }
+}

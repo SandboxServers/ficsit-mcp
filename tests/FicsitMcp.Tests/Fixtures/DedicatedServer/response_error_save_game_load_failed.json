@@ -1,0 +1,7 @@
+{
+  "errorCode": "save_game_load_failed",
+  "errorMessage": "Failed to load the requested save.",
+  "errorData": {
+    "saveName": "Missing"
+  }
+}
