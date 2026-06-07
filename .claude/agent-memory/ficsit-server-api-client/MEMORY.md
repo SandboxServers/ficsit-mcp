@@ -7,3 +7,4 @@
 - [MCP tool conventions](project_mcp_tool_conventions.md) — thin tool→Domain-service shape, hints, exception mapping, optional IFinBridge, verify_connection probes (#6/PR #36)
 - [Settings keys & #8 tools](project_settings_keys_and_tools.md) — verified FG.* key set, typed+passthrough mapper, tool hints, first interface-level fake client
 - [Save-management tools (#7)](project_save_management_tools.md) — backing-service pattern, tool hints, near-match algo, McpServerTool.Create introspection-test technique
+- [Lifecycle & console tools (#9)](project_lifecycle_console_tools.md) — tool hint sets, set_admin_password token-minting, secret non-leak tests, host tool pattern
