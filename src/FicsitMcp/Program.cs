@@ -5,6 +5,7 @@ using FicsitMcp.Domain.GameData;
 using FicsitMcp.Domain.GameData.Model;
 using FicsitMcp.FinBridge;
 using FicsitMcp.Http;
+using FicsitMcp.ServerObservation;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -78,6 +79,11 @@ builder.Services.AddSingleton<IGameDataService>(serviceProvider =>
 // listener and no service, leaving the rest of the server untouched. It shares the host's logger
 // factory, so its logs stay on stderr and never corrupt the JSON-RPC stdout stream.
 builder.Services.AddFinBridge(builder.Configuration);
+
+// Server-observation service backing the state/health MCP tools (#6). Registered AFTER AddFinBridge
+// so it can pick up the optional IFinBridge when the bridge surface is configured (and see null when
+// it is not). Reads through the dedicated-server and FRM clients above.
+builder.Services.AddServerObservation();
 
 builder.Services
     .AddMcpServer()
