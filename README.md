@@ -45,3 +45,29 @@ logged or echoed in tool output — keep them in env vars, not in `appsettings.j
 
 Include only the surfaces you use. See `CLAUDE.md` for the full configuration reference and
 developer docs.
+
+## Tools
+
+Tools are annotated with behavioral hints (`ReadOnly` / `Destructive` / `Idempotent`) that MCP
+clients trust, so they are set to reflect the real consequence of each call.
+
+### Save management (Dedicated Server HTTPS API)
+
+Requires the `DedicatedServer` surface (`FICSITMCP_DedicatedServer__BaseUrl`). Before any load,
+delete, or rollback, the named save/session is validated against the live `EnumerateSessions` list;
+an unknown name fails with the closest matching names so you can retry without another round trip.
+
+| Tool | Read-only | Destructive | Idempotent | What it does |
+|---|:---:|:---:|:---:|---|
+| `list_sessions` | yes | no | yes | Lists all saves across sessions, marking the loaded one. |
+| `save_game` | no | no | no | Saves the running game under a name (no disconnect). |
+| `set_auto_load_session` | no | no | yes | Sets the session to auto-load on next start. |
+| `download_save` | yes | no | yes | Streams a save off-box to a local file. |
+| `upload_save` | no | **yes** | no | Streams a local save up; can load it immediately (disconnects players). |
+| `load_save` | no | **yes** | no | **Disconnects all players** and loads the named save. |
+| `delete_save` | no | **yes** | no | Permanently deletes one save file. |
+| `delete_session` | no | **yes** | no | Permanently deletes every save in a session. |
+| `rollback_to` | no | **yes** | no | Checkpoints the current world first, then loads the target (disconnects players). |
+
+`rollback_to` is the survivable path back: it always takes a `pre-rollback-<utc>` safety save
+**before** loading the target, and a failed checkpoint aborts the rollback without loading anything.

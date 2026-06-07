@@ -26,6 +26,7 @@ src/
     Tools/                   #   thin [McpServerToolType] tools that delegate to Domain
       ServerInfoTool.cs      #   placeholder `server_info` tool
       GameDataTool.cs        #   `lookup_recipe` / `lookup_item` (delegate to IGameDataService)
+      SaveManagementTool.cs  #   save mgmt tools (list/save/load/upload/download/delete/rollback/auto-load)
   FicsitMcp.Domain/          # Satisfactory domain + surface clients; NO MCP references
     ServerInfo.cs            #   record returned by server_info
     IServerInfoProvider.cs   #   service contract (tools depend on this, not reflection)
@@ -52,6 +53,13 @@ src/
       FinErrorCode.cs        #     typed error enum (matches common.schema.json enum)
       AgentLiveness.cs       #     liveness snapshot record
       FinBridgeException.cs ProtocolVersionMismatchException.cs  # surfaced failures (carry FinError / 426 info)
+    DedicatedServer/         #   typed HTTPS API client (one method/function) + its backing services; NO MCP
+      IDedicatedServerApiClient.cs DedicatedServerApiClient.cs  # the single wire seam (envelope/auth/retry)
+      Model/                 #     request/response records (one file per function group)
+      SaveManagement/        #     save-tool backing service (#7): validation + near-match + rollback compose
+        ISaveManagementService.cs SaveManagementService.cs  # owns checkpoint-then-load + EnumerateSessions checks
+        NearMatchFinder.cs   #       pure substring+Levenshtein matcher for not-found suggestions
+        SaveNotFoundException.cs SaveManagementResults.cs    # not-found w/ near-matches; MCP-facing result records
     GameData/                #   canonical game-data layer (Docs.json -> immutable model)
       Model/                 #     immutable records: GameItem/GameRecipe/GameBuilding/...
       DocsJsonParser.cs      #     UTF-16 Docs.json -> GameDataSnapshot (rate math here)

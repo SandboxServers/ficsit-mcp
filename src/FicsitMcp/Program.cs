@@ -59,6 +59,14 @@ builder.Services.AddDedicatedServerApiClient();
 // key strings.
 builder.Services.AddSingleton<IServerSettingsMapper, ServerSettingsMapper>();
 
+// Save-management backing service (#7): owns the live-name validation + near-match suggestions and
+// the rollback checkpoint-then-load composition, so the MCP save tools stay thin. Layered on the
+// typed client above; resolves the dedicated-server surface options (to fail fast naming the env var
+// on a dormant surface) and the registered TimeProvider (for the deterministic checkpoint name).
+builder.Services
+    .AddSingleton<FicsitMcp.Domain.DedicatedServer.SaveManagement.ISaveManagementService,
+        FicsitMcp.Domain.DedicatedServer.SaveManagement.SaveManagementService>();
+
 // FRM observe surface: the typed client over the FRM mod web server (live world state). Resolved
 // lazily over the named FRM HttpClient, so an unconfigured FRM surface fails only when an FRM tool
 // is invoked — HTTPS-API-only operation is unaffected.
