@@ -6,3 +6,4 @@
 - [DI lifetime & validation contract](project_di_lifetime_and_validation.md) — singleton + per-call HttpClient factory, BaseUrl-without-AdminToken bootstrap mode
 - [MCP tool conventions](project_mcp_tool_conventions.md) — thin tool→Domain-service shape, hints, exception mapping, optional IFinBridge, verify_connection probes (#6/PR #36)
 - [Settings keys & #8 tools](project_settings_keys_and_tools.md) — verified FG.* key set, typed+passthrough mapper, tool hints, first interface-level fake client
+- [Save-management tools (#7)](project_save_management_tools.md) — backing-service pattern, tool hints, near-match algo, McpServerTool.Create introspection-test technique
