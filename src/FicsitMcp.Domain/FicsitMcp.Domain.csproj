@@ -23,6 +23,8 @@
   -->
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <!-- IOptions<FinBridgeOptions> for the FIN bridge service. Abstractions-only, no host/MCP dep. -->
+    <PackageReference Include="Microsoft.Extensions.Options" />
   </ItemGroup>
 
 </Project>

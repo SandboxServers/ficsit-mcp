@@ -3,6 +3,7 @@ using FicsitMcp.DedicatedServer;
 using FicsitMcp.Domain;
 using FicsitMcp.Domain.GameData;
 using FicsitMcp.Domain.GameData.Model;
+using FicsitMcp.FinBridge;
 using FicsitMcp.Http;
 
 using Microsoft.Extensions.Configuration;
@@ -70,6 +71,13 @@ builder.Services.AddSingleton<IGameDataService>(serviceProvider =>
     GameDataSnapshot snapshot = GameDataSnapshotLoader.Load(options);
     return new GameDataService(snapshot);
 });
+
+// FIN bridge: an HTTP listener for the in-world FicsIt-Networks Lua agent, mounted as its OWN
+// IHostedService (separate Kestrel WebApplication), completely separate from the MCP stdio
+// transport below. Registered only when the surface is configured — an unconfigured bridge adds no
+// listener and no service, leaving the rest of the server untouched. It shares the host's logger
+// factory, so its logs stay on stderr and never corrupt the JSON-RPC stdout stream.
+builder.Services.AddFinBridge(builder.Configuration);
 
 builder.Services
     .AddMcpServer()

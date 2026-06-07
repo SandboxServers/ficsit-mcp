@@ -10,11 +10,27 @@
 
   <ItemGroup>
     <PackageReference Include="ModelContextProtocol" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" />
-    <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" />
     <!-- IHttpClientFactory + Polly-based resilience for the per-surface clients. Transitively
-         provides Microsoft.Extensions.Http (AddHttpClient), so it is not referenced separately. -->
+         provides Microsoft.Extensions.Http (AddHttpClient), so it is not referenced separately.
+         NOT part of the ASP.NET Core shared framework, so it stays an explicit package. -->
     <PackageReference Include="Microsoft.Extensions.Http.Resilience" />
+  </ItemGroup>
+
+  <!--
+    The FIN bridge listener (FinBridge/) hosts Kestrel as its own IHostedService — a second
+    WebApplication, completely separate from the MCP stdio transport. The shared ASP.NET Core
+    framework supplies Kestrel + minimal-API routing without inflating the deployment (a framework
+    reference is shared at runtime, not a copied package). The project stays a console Exe
+    (OutputType above); the bridge is dormant unless its surface is configured.
+
+    This framework reference ALSO supplies Microsoft.Extensions.Hosting and
+    Microsoft.Extensions.Options.DataAnnotations, which is why they are no longer listed as explicit
+    PackageReferences above — NuGet prunes framework-provided packages and (with warnings-as-errors)
+    flags any redundant reference (NU1510). Their versions still pin centrally in
+    Directory.Packages.props for any project that DOES reference them directly.
+  -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
   <!--
@@ -28,6 +44,12 @@
 
   <ItemGroup>
     <ProjectReference Include="..\FicsitMcp.Domain\FicsitMcp.Domain.csproj" />
+  </ItemGroup>
+
+  <!-- The test project starts the internal FinBridgeHostedService end-to-end and exercises the
+       internal auth middleware; expose internals to it (and only it). -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="FicsitMcp.Tests" />
   </ItemGroup>
 
 </Project>

@@ -423,13 +423,18 @@ The second `poll` body above elides `protocolVersion`, `agentId`, and
 
 ### protocol-version mismatch (server → agent, HTTP 426)
 
+HTTP error bodies are the bare `errorObject` (`common.schema.json#/$defs/errorObject`) — the same
+shape `result.error` carries — with **no** `{ "error": { ... } }` wrapper. The HTTP status conveys
+that this is an error; the body is the error object itself. The status is derived from the `code`
+(`PROTOCOL_VERSION_MISMATCH` → 426, `UNAUTHORIZED` → 401, `INVALID_ARGS` → 400); see the host's
+`FinHttpError` helper, the single place that maps code → status and serializes the body, so endpoints
+and the auth middleware cannot drift.
+
 ```json
 {
-  "error": {
-    "code": "PROTOCOL_VERSION_MISMATCH",
-    "message": "Agent speaks protocol 1; server supports 2-2. Update the FIN agent script.",
-    "details": { "agentVersion": 1, "serverSupportedMin": 2, "serverSupportedMax": 2 }
-  }
+  "code": "PROTOCOL_VERSION_MISMATCH",
+  "message": "Agent speaks protocol 1; server supports 2-2. Update the FIN agent script.",
+  "details": { "agentVersion": 1, "serverSupportedMin": 2, "serverSupportedMax": 2 }
 }
 ```
 
@@ -461,7 +466,11 @@ The second `poll` body above elides `protocolVersion`, `agentId`, and
 **Left to downstream issues.**
 
 - #18 — concrete Kestrel binding/config, `TaskCompletionSource` registry, tombstone
-  retention window, constant-time token compare implementation.
+  retention window (bounded oldest-first eviction), constant-time token compare
+  implementation. The server-side event ring mirrors the agent's drop-oldest design but
+  is kept **per agent** (cap applies per agent, with a per-agent dropped count surfaced on
+  liveness) so one chatty agent cannot evict another's recent events; `RecentEvents()`
+  merges all agents' rings ordered by server-stamped `receivedAt`.
 - #19 — agent loop structure, EEPROM size budget, recently-seen-id set sizing, the
   single-flight fallback decision once InternetCard concurrency is measured in-game.
 - #20 — the specific `operation` names and `args` shapes per machine-control tool, and

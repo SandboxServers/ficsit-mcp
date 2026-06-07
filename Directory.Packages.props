@@ -35,6 +35,12 @@
          Abstractions package keeps the Domain project light and provider-agnostic. Kept on the
          10.0.x line to match Hosting and avoid a downgrade warning. -->
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.8" />
+
+    <!-- Options pattern (IOptions<T>), referenced by the Domain project so the FIN bridge service can
+         read its validated FinBridgeOptions without depending on a concrete config provider or the
+         host. Abstractions-only, kept on the 10.0.x line to match Hosting and avoid a downgrade
+         warning. -->
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.8" />
   </ItemGroup>
 
   <!-- Test-only dependencies. -->
