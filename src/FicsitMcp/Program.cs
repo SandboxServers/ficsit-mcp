@@ -1,6 +1,7 @@
 using FicsitMcp.Configuration;
 using FicsitMcp.DedicatedServer;
 using FicsitMcp.Domain;
+using FicsitMcp.Domain.DedicatedServer.Settings;
 using FicsitMcp.Domain.GameData;
 using FicsitMcp.Domain.GameData.Model;
 using FicsitMcp.FinBridge;
@@ -51,6 +52,12 @@ builder.Services.AddSurfaceHttpClients();
 // Typed client for the official Dedicated Server HTTPS API, layered on the named dedicated-server
 // HttpClient above. Tools (#6-#9) depend on IDedicatedServerApiClient, never on raw HTTP.
 builder.Services.AddDedicatedServerApiClient();
+
+// Maps typed server-options / advanced-game-settings / new-game records to and from the client's
+// wire string->string maps (the typed-property<->dictionary + applied-vs-pending shaping for #8).
+// Stateless and thread-safe, so a singleton is safe; the settings tools depend on this, not on raw
+// key strings.
+builder.Services.AddSingleton<IServerSettingsMapper, ServerSettingsMapper>();
 
 // FRM observe surface: the typed client over the FRM mod web server (live world state). Resolved
 // lazily over the named FRM HttpClient, so an unconfigured FRM surface fails only when an FRM tool
